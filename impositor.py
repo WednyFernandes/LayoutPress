@@ -215,27 +215,59 @@ class Impositor:
         # Redimensionar img_bleed para pt
         img_bleed_resized = img_bleed.resize((int(img_w_pt), int(img_h_pt)), Image.LANCZOS)
 
-        x = margem_pt
-        y = folha_h_pt - margem_pt - img_h_pt
+        # compute how many cols/rows will be used to place up to 'unidades'
+        if img_w_pt + gap_pt > 0:
+            cols = int((folha_w_pt - 2 * margem_pt + gap_pt) // (img_w_pt + gap_pt))
+        else:
+            cols = 1
+        if img_h_pt + gap_pt > 0:
+            rows = int((folha_h_pt - 2 * margem_pt + gap_pt) // (img_h_pt + gap_pt))
+        else:
+            rows = 1
+
+        cols = max(1, cols)
+        rows = max(1, rows)
+
+        # limit by unidades
+        max_slots = cols * rows
+        slots = min(unidades, max_slots)
+
+        # compute used width/height and center offsets
+        used_w = cols * img_w_pt + (cols - 1) * gap_pt
+        used_h = rows * img_h_pt + (rows - 1) * gap_pt
+        start_x = max(margem_pt, (folha_w_pt - used_w) / 2.0)
+        start_y = max(margem_pt, folha_h_pt - margem_pt - img_h_pt - (rows - 1) * (img_h_pt + gap_pt))
+
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(preview)
+        border_color = (77, 77, 77)  # K 30%
 
         count = 0
-        while count < unidades and count < 100:  # limite para preview
-            preview.paste(img_bleed_resized, (int(x), int(y)))
-            count += 1
-
-            x += img_w_pt + gap_pt
-            if x + img_w_pt + margem_pt > folha_w_pt:
-                x = margem_pt
-                y -= img_h_pt + gap_pt
-                if y < margem_pt:
+        x = start_x
+        y = start_y
+        for r in range(rows):
+            for c in range(cols):
+                if count >= slots:
                     break
+                px = int(x + c * (img_w_pt + gap_pt))
+                py = int(y - r * (img_h_pt + gap_pt))
+                preview.paste(img_bleed_resized, (px, py))
+                # draw K 20% square around the placed image
+                rect = [px, py, px + int(img_w_pt), py + int(img_h_pt)]
+                # stroke width: 0.5 mm -> convert to points (and points map 1:1 to preview px here)
+                stroke_px = max(1, int(round(0.5 * PT_PER_MM)))
+                draw.rectangle(rect, outline=border_color, width=stroke_px)
+                count += 1
+            if count >= slots:
+                break
 
         return preview
 
     def impose_to_pdf(self, img: Image.Image, folha: str = "A4", unidades: int = 10,
                       sangria_mm: float = 3, modo_sangria: Literal["mirror", "solid", "none"] = "mirror",
                       margem_mm: float = 5, gap_mm: float = 0, rotacionar: bool = True,
-                      output_path: str = "output.pdf", cor_sangria: Tuple[int, int, int] = (255, 255, 255)) -> None:
+                      output_path: str = "output.pdf", cor_sangria: Tuple[int, int, int] = (255, 255, 255),
+                      multi_mode: Optional[str] = None) -> None:
         """
         Impõe a imagem em um PDF com múltiplas unidades por folha.
 
@@ -264,12 +296,118 @@ class Impositor:
         margem_pt = margem_mm * PT_PER_MM
         gap_pt = gap_mm * PT_PER_MM
 
+        # support img being a list (multipage source)
+        def _place_single_image(canvas_obj, pil_img):
+            pil_img_bleed = self.add_bleed(pil_img, sangria_mm, modo_sangria, cor_sangria)
+            img_w_pt_local = pil_img_bleed.width * 72 / self.dpi
+            img_h_pt_local = pil_img_bleed.height * 72 / self.dpi
+
+            x_local = margem_pt
+            y_local = folha_h - margem_pt - img_h_pt_local
+            count_local = 0
+            while count_local < unidades:
+                canvas_obj.drawInlineImage(pil_img_bleed, x_local, y_local, width=img_w_pt_local, height=img_h_pt_local)
+                # draw K 20% border using stroke rectangle
+                try:
+                    # K 30% gray and 0.5mm stroke width
+                    canvas_obj.setStrokeColorRGB(0.3, 0.3, 0.3)
+                    canvas_obj.setLineWidth(0.5 * PT_PER_MM)
+                    canvas_obj.rect(x_local, y_local, img_w_pt_local, img_h_pt_local, stroke=1, fill=0)
+                    canvas_obj.setLineWidth(1)
+                except Exception:
+                    pass
+                count_local += 1
+
+                x_local += img_w_pt_local + gap_pt
+                if x_local + img_w_pt_local + margem_pt > folha_w:
+                    x_local = margem_pt
+                    y_local -= img_h_pt_local + gap_pt
+                    if y_local < margem_pt:
+                        canvas_obj.showPage()
+                        y_local = folha_h - margem_pt - img_h_pt_local
+
+        c = canvas.Canvas(output_path, pagesize=(folha_w, folha_h))
+
+        # If img is a list, support multipage modes
+        if isinstance(img, (list, tuple)):
+            if multi_mode == 'repeat_per_page':
+                # For each source page, create pages repeating that image
+                for pil_img in img:
+                    _place_single_image(c, pil_img)
+                    c.showPage()
+            elif multi_mode == 'one_each':
+                # Place one of each image sequentially on sheets, filling grid
+                # We'll reuse generate_preview logic to compute placements.
+                # Convert each image to its bleed-resized version in points.
+                imgs_pt = []
+                for pil_img in img:
+                    pil_img_bleed = self.add_bleed(pil_img, sangria_mm, modo_sangria, cor_sangria)
+                    imgs_pt.append((pil_img_bleed, pil_img_bleed.width * 72 / self.dpi, pil_img_bleed.height * 72 / self.dpi))
+
+                # compute cols/rows by using first image size as reference (approx)
+                if imgs_pt:
+                    ref_w = imgs_pt[0][1]
+                    ref_h = imgs_pt[0][2]
+                else:
+                    ref_w = ref_h = 1
+                cols = max(1, int((folha_w - 2 * margem_pt + gap_pt) // (ref_w + gap_pt)))
+                rows = max(1, int((folha_h - 2 * margem_pt + gap_pt) // (ref_h + gap_pt)))
+                per_page = cols * rows
+                idx = 0
+                while idx < len(imgs_pt):
+                    x = margem_pt
+                    y = folha_h - margem_pt - ref_h
+                    count = 0
+                    while count < per_page and idx < len(imgs_pt):
+                        pil_img_bleed, iw, ih = imgs_pt[idx]
+                        c.drawInlineImage(pil_img_bleed, x, y, width=iw, height=ih)
+                        try:
+                            c.setStrokeColorRGB(0.3, 0.3, 0.3)
+                            c.setLineWidth(0.5 * PT_PER_MM)
+                            c.rect(x, y, iw, ih, stroke=1, fill=0)
+                            c.setLineWidth(1)
+                        except Exception:
+                            pass
+                        idx += 1
+                        count += 1
+                        x += iw + gap_pt
+                        if x + iw + margem_pt > folha_w:
+                            x = margem_pt
+                            y -= ih + gap_pt
+                    c.showPage()
+            elif multi_mode == 'duplex':
+                # Pair pages: for each pair, place front repeated then back repeated on next page
+                it = iter(img)
+                pair_list = []
+                temp = []
+                for p in img:
+                    temp.append(p)
+                i = 0
+                while i < len(temp):
+                    front = temp[i]
+                    back = temp[i+1] if i+1 < len(temp) else None
+                    # place front
+                    if front:
+                        _place_single_image(c, front)
+                        c.showPage()
+                    # place back
+                    if back:
+                        _place_single_image(c, back)
+                        c.showPage()
+                    i += 2
+            else:
+                # fallback: repeat behavior
+                for pil_img in img:
+                    _place_single_image(c, pil_img)
+                    c.showPage()
+            c.save()
+            return
+
+        # default single image behavior (existing)
         img = self.add_bleed(img, sangria_mm, modo_sangria, cor_sangria)
 
         img_w_pt = img.width * 72 / self.dpi
         img_h_pt = img.height * 72 / self.dpi
-
-        c = canvas.Canvas(output_path, pagesize=(folha_w, folha_h))
 
         x = margem_pt
         y = folha_h - margem_pt - img_h_pt
@@ -277,6 +415,13 @@ class Impositor:
         count = 0
         while count < unidades:
             c.drawInlineImage(img, x, y, width=img_w_pt, height=img_h_pt)
+            try:
+                c.setStrokeColorRGB(0.3, 0.3, 0.3)
+                c.setLineWidth(0.5 * PT_PER_MM)
+                c.rect(x, y, img_w_pt, img_h_pt, stroke=1, fill=0)
+                c.setLineWidth(1)
+            except Exception:
+                pass
             count += 1
 
             x += img_w_pt + gap_pt

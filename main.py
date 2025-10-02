@@ -33,6 +33,8 @@ from PySide6.QtCore import Qt
 
 from impositor import Impositor, PT_PER_MM
 from PIL import Image
+import fitz
+import math
 
 
 class MainWindow(QWidget):
@@ -43,8 +45,14 @@ class MainWindow(QWidget):
         self.setWindowTitle("Impositor - Simples")
         self.impositor = Impositor()
         self.img: Optional[Image.Image] = None
+        # store last loaded file path to build a default export name
+        self._last_loaded_path: Optional[str] = None
+    # single-page input (PDF will load first page only)
+    # multipage support removed per request
         self.cor_sangria: Tuple[int, int, int] = (255, 255, 255)
         self._build_ui()
+        # prefer an initial 5:4 width:height ratio (resizable)
+        self.resize(1000, 800)  # width 1000, height 800 => 5:4
 
     def _build_ui(self) -> None:
         # Root layout with two columns: controls (left) and preview (right)
@@ -56,7 +64,7 @@ class MainWindow(QWidget):
         # File group
         file_group = QGroupBox("Arquivo")
         fg_layout = QHBoxLayout()
-        self.btn_load = QPushButton("Carregar imagem/PDF")
+        self.btn_load = QPushButton("Abrir arquivo")
         self.btn_load.clicked.connect(self.load_file)
         self.btn_load.setShortcut('Ctrl+O')
         fg_layout.addWidget(self.btn_load)
@@ -83,14 +91,14 @@ class MainWindow(QWidget):
         sg.addWidget(self.spin_h)
         self.chk_keep = QCheckBox("Manter proporção")
         self.chk_keep.setChecked(True)
-        self.chk_keep.setToolTip("Preserva a relação largura/altura ao redimensionar")
+        self.chk_keep.setToolTip("Preserva aspecto ao redimensionar")
         sg.addWidget(self.chk_keep)
         size_group.setLayout(sg)
         controls.addWidget(size_group)
 
-        # Imposition options
+    # Imposition options (stacked for responsive layout)
         imp_group = QGroupBox("Imposição")
-        ig = QHBoxLayout()
+        ig = QVBoxLayout()
         ig.addWidget(QLabel("Folha:"))
         self.cmb_sheet = QComboBox()
         try:
@@ -99,39 +107,48 @@ class MainWindow(QWidget):
             self.cmb_sheet.addItems(["A4"])
         self.cmb_sheet.setToolTip("Selecione o tamanho da folha para a imposição")
         ig.addWidget(self.cmb_sheet)
+
         ig.addWidget(QLabel("Unidades:"))
         self.spin_units = QSpinBox()
         self.spin_units.setRange(1, 1000)
         self.spin_units.setValue(1)
         self.spin_units.setToolTip("Número de unidades por folha")
         ig.addWidget(self.spin_units)
+
         ig.addWidget(QLabel("Sangria (mm):"))
         self.spin_bleed = QDoubleSpinBox()
         self.spin_bleed.setRange(0, 100)
         self.spin_bleed.setDecimals(1)
         self.spin_bleed.setValue(0)  # default: no bleed
-        self.spin_bleed.setToolTip("Tamanho da sangria em mm")
+        self.spin_bleed.setToolTip("Sangria (mm). 0 = sem sangria")
         ig.addWidget(self.spin_bleed)
+
         ig.addWidget(QLabel("Espaço (mm):"))
         self.spin_gap = QDoubleSpinBox()
         self.spin_gap.setRange(0, 50)
         self.spin_gap.setDecimals(1)
         self.spin_gap.setValue(0)  # default: no gap
-        self.spin_gap.setToolTip("Espaço entre unidades em mm")
+        self.spin_gap.setToolTip("Espaçamento entre unidades (mm)")
         ig.addWidget(self.spin_gap)
+
+        # (multipage controls removed)
+
+        # bleed mode (Português labels)
         self.cmb_bleed = QComboBox()
         self.cmb_bleed.addItems(["Espelhar Bordas", "Cor Sólida", "Sem Sangria"])
         self.cmb_bleed.setToolTip("Modo de tratamento das bordas/sangria")
         ig.addWidget(self.cmb_bleed)
+
         self.btn_color = QPushButton("Cor da sangria")
         self.btn_color.clicked.connect(self.choose_color)
-        self.btn_color.setToolTip("Escolha a cor usada quando 'Cor Sólida' estiver selecionado")
+        self.btn_color.setToolTip("Seleciona cor para sangria sólida")
         # only enable color button when "Cor Sólida" is selected
         try:
             self.btn_color.setEnabled(self.cmb_bleed.currentText() == 'Cor Sólida')
         except Exception:
             pass
         ig.addWidget(self.btn_color)
+
         imp_group.setLayout(ig)
         controls.addWidget(imp_group)
 
@@ -154,15 +171,23 @@ class MainWindow(QWidget):
         # show graphite background in widget; the sheet image will be pasted with a white border
         self.lbl_preview.setStyleSheet("background: #4a4a4a; border: 1px solid #333;")
         pv_layout.addWidget(self.lbl_preview)
+    # no multipage navigation (single-page preview only)
         preview_box.setLayout(pv_layout)
 
         root.addLayout(controls, 0)
         root.addWidget(preview_box, 1)
 
+        # Footer
+        footer = QLabel("Desenvolvido por wednyfernandes.com.br")
+        footer.setAlignment(Qt.AlignCenter)
+        footer.setStyleSheet("color: #888; font-size: 10px;")
+        main_v = QVBoxLayout()
+        main_v.addLayout(root)
+        main_v.addWidget(footer)
+        self.setLayout(main_v)
+
         # Apply a light modern stylesheet for clarity
         self.setStyleSheet("QGroupBox { font-weight: bold; } QPushButton { padding: 6px 10px; }")
-
-        self.setLayout(root)
 
         # Connect many inputs to live preview
         self._connect_live_preview()
@@ -176,12 +201,28 @@ class MainWindow(QWidget):
         except Exception:
             pass
 
+    # multipage support removed: app now handles a single image (first page of PDF)
+
     def load_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Images and PDFs (*.png *.jpg *.jpeg *.pdf)")
         if not path:
             return
         try:
-            self.img = self.impositor.read_image(path)
+            # handle PDFs by extracting all pages
+            if path.lower().endswith('.pdf'):
+                pdf = fitz.open(path)
+                # only load first page for single-page workflow
+                if len(pdf) > 0:
+                    p = pdf[0]
+                    pix = p.get_pixmap(dpi=self.impositor.dpi)
+                    self.img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                else:
+                    self.img = None
+            else:
+                self.img = self.impositor.read_image(path)
+
+            # remember loaded path for export filename default
+            self._last_loaded_path = path
             self.lbl_file.setText(path.split("/")[-1])
             # set default size to file's size in mm
             w_px, h_px = self.img.width, self.img.height
@@ -202,6 +243,7 @@ class MainWindow(QWidget):
             self._rotate_for_export = rotate_img
 
             # auto-generate preview (live)
+            # update preview
             self.generate_preview()
         except Exception as e:
             self.lbl_file.setText(f"Erro: {e}")
@@ -217,7 +259,19 @@ class MainWindow(QWidget):
         path = urls[0].toLocalFile()
         if path:
             try:
-                self.img = self.impositor.read_image(path)
+                # mimic load_file behavior for PDFs
+                if path.lower().endswith('.pdf'):
+                    pdf = fitz.open(path)
+                    if len(pdf) > 0:
+                        p = pdf[0]
+                        pix = p.get_pixmap(dpi=self.impositor.dpi)
+                        self.img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                    else:
+                        self.img = None
+                else:
+                    self.img = self.impositor.read_image(path)
+
+                self._last_loaded_path = path
                 self.lbl_file.setText(path.split("/")[-1])
                 self.generate_preview()
             except Exception as e:
@@ -329,13 +383,69 @@ class MainWindow(QWidget):
         return QPixmap.fromImage(qimg)
 
     def generate_preview(self) -> None:
+        # If no image loaded, clear preview
         if not self.img:
+            self.lbl_preview.clear()
             return
         w_val = self.spin_w.value()
         h_val = self.spin_h.value()
         w = w_val if (w_val is not None and w_val > 0) else None
         h = h_val if (h_val is not None and h_val > 0) else None
         img = self.img
+        # (multipage removed) - no tiled preview
+        # Note: app now only shows single-page preview
+        if False:
+            try:
+                thumbs = []
+                max_w = 0
+                max_h = 0
+                for p in []:  # disabled
+                    # create thumbnail for each page respecting requested size
+                    p_thumb = p.copy()
+                    p_thumb.thumbnail((400, 400), Image.LANCZOS)
+                    thumbs.append(p_thumb)
+                    max_w = max(max_w, p_thumb.width)
+                    max_h = max(max_h, p_thumb.height)
+
+                # choose number of columns to form roughly square layout
+                count = len(thumbs)
+                cols = int(math.ceil(math.sqrt(count)))
+                rows = int(math.ceil(count / cols))
+
+                gap = 10
+                total_w = cols * max_w + (cols + 1) * gap
+                total_h = rows * max_h + (rows + 1) * gap
+                tiled = Image.new('RGB', (total_w, total_h), (74, 74, 74))
+                x = gap
+                y = gap
+                i = 0
+                for r in range(rows):
+                    x = gap
+                    for c in range(cols):
+                        if i >= count:
+                            break
+                        th = thumbs[i]
+                        # paste centered in cell
+                        cx = x + (max_w - th.width) // 2
+                        cy = y + (max_h - th.height) // 2
+                        # create white background cell
+                        cell = Image.new('RGB', (th.width, th.height), (255, 255, 255))
+                        tiled.paste(cell, (cx, cy))
+                        tiled.paste(th, (cx, cy))
+                        x += max_w + gap
+                        i += 1
+                    y += max_h + gap
+
+                composite = tiled
+                pix = self.pil_to_pixmap(composite)
+                scaled = pix.scaled(self.lbl_preview.width(), self.lbl_preview.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.lbl_preview.setPixmap(scaled)
+                return
+            except Exception as e:
+                # fallback to single page preview
+                pass
+
+        # proceed with single-image preview below
         if (w is not None) or (h is not None):
             img = self.impositor.resize_image_mm(img, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
         modo = self._bleed_mode()
@@ -382,7 +492,25 @@ class MainWindow(QWidget):
         if not self.img:
             self.lbl_file.setText("Nenhum arquivo carregado")
             return
-        save_path, _ = QFileDialog.getSaveFileName(self, "Salvar PDF", "output.pdf", "PDF Files (*.pdf)")
+        # build a sensible default filename: 'original - ajustado.pdf' when possible
+        default_name = "output.pdf"
+        try:
+            if self._last_loaded_path:
+                import os
+                base = os.path.splitext(os.path.basename(self._last_loaded_path))[0]
+                default_name = f"{base} - ajustado.pdf"
+        except Exception:
+            default_name = "output.pdf"
+
+        # prefer to open save dialog in same folder as last loaded file
+        try:
+            import os
+            initial_dir = os.path.dirname(self._last_loaded_path) if self._last_loaded_path else ''
+            start = os.path.join(initial_dir, default_name) if initial_dir else default_name
+        except Exception:
+            start = default_name
+
+        save_path, _ = QFileDialog.getSaveFileName(self, "Salvar PDF", start, "PDF Files (*.pdf)")
         if not save_path:
             return
         w_val = self.spin_w.value()
@@ -401,6 +529,7 @@ class MainWindow(QWidget):
             max_fit = self._units_for_image_and_sheet(img_to_export, folha, self.spin_bleed.value(), self.spin_gap.value())
             unidades = min(self.spin_units.value(), max(1, max_fit))
             # If single unit, compute margin so the item is centered on the page
+            # compute margin when single unit requested so it's centered
             if unidades == 1:
                 img_bleed = self.impositor.add_bleed(img_to_export, self.spin_bleed.value(), modo, self.cor_sangria)
                 img_w_pt = img_bleed.width * 72 / self.impositor.dpi
@@ -417,6 +546,19 @@ class MainWindow(QWidget):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    # try to load a dark theme qss from the application folder
+    try:
+        import os
+        base_dir = os.path.dirname(__file__)
+        qss_path = os.path.join(base_dir, 'dark_theme.qss')
+        if os.path.exists(qss_path):
+            with open(qss_path, 'r', encoding='utf-8') as f:
+                app.setStyleSheet(f.read())
+        else:
+            # fallback small stylesheet if qss not found
+            app.setStyleSheet("QGroupBox { font-weight: bold; } QPushButton { padding: 6px 10px; }")
+    except Exception:
+        pass
     w = MainWindow()
     w.show()
     sys.exit(app.exec())

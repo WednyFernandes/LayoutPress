@@ -1,0 +1,43 @@
+/* Compact dark theme inspired by PyQtDarkTheme (reduced) */
+QWidget {
+  background-color: #2b2b2b;
+  color: #dcdcdc;
+  selection-background-color: #3d6ea8;
+  selection-color: #ffffff;
+}
+QGroupBox {
+  border: 1px solid #3c3f41;
+  margin-top: 6px;
+  padding: 6px;
+}
+QGroupBox::title {
+  subcontrol-origin: margin;
+  left: 6px;
+  padding: 0 3px 0 3px;
+}
+QPushButton {
+  background-color: #3c3f41;
+  border: 1px solid #4b4f51;
+  padding: 6px 10px;
+  border-radius: 3px;
+}
+QPushButton:hover { background-color: #4b4f51; }
+QPushButton:pressed { background-color: #2f3335; }
+QLabel { color: #e6e6e6; }
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+  background-color: #353838;
+  border: 1px solid #4b4f51;
+  padding: 3px;
+  selection-background-color: #3d6ea8;
+}
+QComboBox QAbstractItemView { background: #2b2b2b; selection-background-color: #3d6ea8; }
+QCheckBox { spacing: 6px; }
+QMenuBar { background: #2b2b2b; }
+QToolBar { background: #2b2b2b; }
+QStatusBar { background: #2b2b2b; }
+QScrollBar:horizontal, QScrollBar:vertical {
+  background: #2b2b2b; height: 12px; width: 12px; margin: 0px 0px 0px 0px;
+}
+QScrollBar::handle { background: #4a4a4a; min-width: 20px; }
+QScrollBar::add-line, QScrollBar::sub-line { background: none; }
+QLabel#footer { color: #888888; font-size: 10px; }
