@@ -232,29 +232,32 @@ class Impositor:
         max_slots = cols * rows
         slots = min(unidades, max_slots)
 
-        # compute used width/height and center offsets
+        # compute used width/height and center offsets (top-left coordinate system for PIL)
         used_w = cols * img_w_pt + (cols - 1) * gap_pt
         used_h = rows * img_h_pt + (rows - 1) * gap_pt
         start_x = max(margem_pt, (folha_w_pt - used_w) / 2.0)
-        start_y = max(margem_pt, folha_h_pt - margem_pt - img_h_pt - (rows - 1) * (img_h_pt + gap_pt))
+        start_y = max(margem_pt, (folha_h_pt - used_h) / 2.0)
 
         from PIL import ImageDraw
         draw = ImageDraw.Draw(preview)
         border_color = (77, 77, 77)  # K 30%
 
         count = 0
-        x = start_x
-        y = start_y
         for r in range(rows):
             for c in range(cols):
                 if count >= slots:
                     break
-                px = int(x + c * (img_w_pt + gap_pt))
-                py = int(y - r * (img_h_pt + gap_pt))
+                px = int(round(start_x + c * (img_w_pt + gap_pt)))
+                py = int(round(start_y + r * (img_h_pt + gap_pt)))
+                # ensure we don't paste partially outside the preview canvas
+                if px < 0 or py < 0 or px + int(img_w_pt) > preview.width or py + int(img_h_pt) > preview.height:
+                    # skip placements that would overflow (safety)
+                    count += 1
+                    continue
                 preview.paste(img_bleed_resized, (px, py))
-                # draw K 20% square around the placed image
+                # draw K 30% border around the placed image
                 rect = [px, py, px + int(img_w_pt), py + int(img_h_pt)]
-                # stroke width: 0.5 mm -> convert to points (and points map 1:1 to preview px here)
+                # stroke width: ~0.5 mm -> convert to preview pixels (points map 1:1 here)
                 stroke_px = max(1, int(round(0.5 * PT_PER_MM)))
                 draw.rectangle(rect, outline=border_color, width=stroke_px)
                 count += 1
@@ -298,33 +301,56 @@ class Impositor:
 
         # support img being a list (multipage source)
         def _place_single_image(canvas_obj, pil_img):
+            # Prepare image with bleed and sizes in points
             pil_img_bleed = self.add_bleed(pil_img, sangria_mm, modo_sangria, cor_sangria)
             img_w_pt_local = pil_img_bleed.width * 72 / self.dpi
             img_h_pt_local = pil_img_bleed.height * 72 / self.dpi
 
-            x_local = margem_pt
-            y_local = folha_h - margem_pt - img_h_pt_local
-            count_local = 0
-            while count_local < unidades:
-                canvas_obj.drawInlineImage(pil_img_bleed, x_local, y_local, width=img_w_pt_local, height=img_h_pt_local)
-                # draw K 20% border using stroke rectangle
-                try:
-                    # K 30% gray and 0.5mm stroke width
-                    canvas_obj.setStrokeColorRGB(0.3, 0.3, 0.3)
-                    canvas_obj.setLineWidth(0.5 * PT_PER_MM)
-                    canvas_obj.rect(x_local, y_local, img_w_pt_local, img_h_pt_local, stroke=1, fill=0)
-                    canvas_obj.setLineWidth(1)
-                except Exception:
-                    pass
-                count_local += 1
+            # compute cols/rows similar to generate_preview
+            if img_w_pt_local + gap_pt > 0:
+                cols = int((folha_w - 2 * margem_pt + gap_pt) // (img_w_pt_local + gap_pt))
+            else:
+                cols = 1
+            if img_h_pt_local + gap_pt > 0:
+                rows = int((folha_h - 2 * margem_pt + gap_pt) // (img_h_pt_local + gap_pt))
+            else:
+                rows = 1
 
-                x_local += img_w_pt_local + gap_pt
-                if x_local + img_w_pt_local + margem_pt > folha_w:
-                    x_local = margem_pt
-                    y_local -= img_h_pt_local + gap_pt
-                    if y_local < margem_pt:
-                        canvas_obj.showPage()
-                        y_local = folha_h - margem_pt - img_h_pt_local
+            cols = max(1, cols)
+            rows = max(1, rows)
+
+            per_page = cols * rows
+
+            used_w = cols * img_w_pt_local + (cols - 1) * gap_pt
+            used_h = rows * img_h_pt_local + (rows - 1) * gap_pt
+            start_x = max(margem_pt, (folha_w - used_w) / 2.0)
+            start_y_top = max(margem_pt, (folha_h - used_h) / 2.0)  # distance from top in preview coords
+
+            # place pages repeating this image until unidades reached
+            count_total = 0
+            while count_total < unidades:
+                placed = 0
+                for r in range(rows):
+                    for c in range(cols):
+                        if placed >= per_page or count_total >= unidades:
+                            break
+                        x_local = start_x + c * (img_w_pt_local + gap_pt)
+                        # convert preview top-left y to reportlab bottom-left y
+                        y_bl = folha_h - start_y_top - img_h_pt_local - r * (img_h_pt_local + gap_pt)
+                        canvas_obj.drawInlineImage(pil_img_bleed, x_local, y_bl, width=img_w_pt_local, height=img_h_pt_local)
+                        try:
+                            canvas_obj.setStrokeColorRGB(0.3, 0.3, 0.3)
+                            canvas_obj.setLineWidth(0.5 * PT_PER_MM)
+                            canvas_obj.rect(x_local, y_bl, img_w_pt_local, img_h_pt_local, stroke=1, fill=0)
+                            canvas_obj.setLineWidth(1)
+                        except Exception:
+                            pass
+                        placed += 1
+                        count_total += 1
+                    if placed >= per_page or count_total >= unidades:
+                        break
+                if count_total < unidades:
+                    canvas_obj.showPage()
 
         c = canvas.Canvas(output_path, pagesize=(folha_w, folha_h))
 
@@ -354,26 +380,31 @@ class Impositor:
                 rows = max(1, int((folha_h - 2 * margem_pt + gap_pt) // (ref_h + gap_pt)))
                 per_page = cols * rows
                 idx = 0
+                used_w = cols * ref_w + (cols - 1) * gap_pt
+                used_h = rows * ref_h + (rows - 1) * gap_pt
+                start_x = max(margem_pt, (folha_w - used_w) / 2.0)
+                start_y_top = max(margem_pt, (folha_h - used_h) / 2.0)
                 while idx < len(imgs_pt):
-                    x = margem_pt
-                    y = folha_h - margem_pt - ref_h
                     count = 0
-                    while count < per_page and idx < len(imgs_pt):
-                        pil_img_bleed, iw, ih = imgs_pt[idx]
-                        c.drawInlineImage(pil_img_bleed, x, y, width=iw, height=ih)
-                        try:
-                            c.setStrokeColorRGB(0.3, 0.3, 0.3)
-                            c.setLineWidth(0.5 * PT_PER_MM)
-                            c.rect(x, y, iw, ih, stroke=1, fill=0)
-                            c.setLineWidth(1)
-                        except Exception:
-                            pass
-                        idx += 1
-                        count += 1
-                        x += iw + gap_pt
-                        if x + iw + margem_pt > folha_w:
-                            x = margem_pt
-                            y -= ih + gap_pt
+                    for r in range(rows):
+                        for c_idx in range(cols):
+                            if count >= per_page or idx >= len(imgs_pt):
+                                break
+                            pil_img_bleed, iw, ih = imgs_pt[idx]
+                            x = start_x + c_idx * (ref_w + gap_pt)
+                            y_bl = folha_h - start_y_top - ref_h - r * (ref_h + gap_pt)
+                            c.drawInlineImage(pil_img_bleed, x, y_bl, width=iw, height=ih)
+                            try:
+                                c.setStrokeColorRGB(0.3, 0.3, 0.3)
+                                c.setLineWidth(0.5 * PT_PER_MM)
+                                c.rect(x, y_bl, iw, ih, stroke=1, fill=0)
+                                c.setLineWidth(1)
+                            except Exception:
+                                pass
+                            idx += 1
+                            count += 1
+                        if count >= per_page or idx >= len(imgs_pt):
+                            break
                     c.showPage()
             elif multi_mode == 'duplex':
                 # Pair pages: for each pair, place front repeated then back repeated on next page
@@ -403,33 +434,53 @@ class Impositor:
             c.save()
             return
 
-        # default single image behavior (existing)
+        # default single image behavior (centered to match preview)
         img = self.add_bleed(img, sangria_mm, modo_sangria, cor_sangria)
 
         img_w_pt = img.width * 72 / self.dpi
         img_h_pt = img.height * 72 / self.dpi
 
-        x = margem_pt
-        y = folha_h - margem_pt - img_h_pt
+        # compute cols/rows and centering like generate_preview
+        if img_w_pt + gap_pt > 0:
+            cols = int((folha_w - 2 * margem_pt + gap_pt) // (img_w_pt + gap_pt))
+        else:
+            cols = 1
+        if img_h_pt + gap_pt > 0:
+            rows = int((folha_h - 2 * margem_pt + gap_pt) // (img_h_pt + gap_pt))
+        else:
+            rows = 1
 
-        count = 0
-        while count < unidades:
-            c.drawInlineImage(img, x, y, width=img_w_pt, height=img_h_pt)
-            try:
-                c.setStrokeColorRGB(0.3, 0.3, 0.3)
-                c.setLineWidth(0.5 * PT_PER_MM)
-                c.rect(x, y, img_w_pt, img_h_pt, stroke=1, fill=0)
-                c.setLineWidth(1)
-            except Exception:
-                pass
-            count += 1
+        cols = max(1, cols)
+        rows = max(1, rows)
 
-            x += img_w_pt + gap_pt
-            if x + img_w_pt + margem_pt > folha_w:
-                x = margem_pt
-                y -= img_h_pt + gap_pt
-                if y < margem_pt:
-                    c.showPage()
-                    y = folha_h - margem_pt - img_h_pt
+        per_page = cols * rows
+        used_w = cols * img_w_pt + (cols - 1) * gap_pt
+        used_h = rows * img_h_pt + (rows - 1) * gap_pt
+        start_x = max(margem_pt, (folha_w - used_w) / 2.0)
+        start_y_top = max(margem_pt, (folha_h - used_h) / 2.0)
+
+        count_total = 0
+        while count_total < unidades:
+            placed = 0
+            for r in range(rows):
+                for c_idx in range(cols):
+                    if placed >= per_page or count_total >= unidades:
+                        break
+                    x = start_x + c_idx * (img_w_pt + gap_pt)
+                    y_bl = folha_h - start_y_top - img_h_pt - r * (img_h_pt + gap_pt)
+                    c.drawInlineImage(img, x, y_bl, width=img_w_pt, height=img_h_pt)
+                    try:
+                        c.setStrokeColorRGB(0.3, 0.3, 0.3)
+                        c.setLineWidth(0.5 * PT_PER_MM)
+                        c.rect(x, y_bl, img_w_pt, img_h_pt, stroke=1, fill=0)
+                        c.setLineWidth(1)
+                    except Exception:
+                        pass
+                    placed += 1
+                    count_total += 1
+                if placed >= per_page or count_total >= unidades:
+                    break
+            if count_total < unidades:
+                c.showPage()
 
         c.save()
