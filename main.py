@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QSizePolicy,
 )
-from PySide6.QtGui import QPixmap, QImage
+from PySide6.QtGui import QPixmap, QImage, QIcon
 from PySide6.QtCore import Qt
 
 from impositor import Impositor, PT_PER_MM
@@ -42,13 +42,13 @@ class MainWindow(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Impositor - Simples")
+        self.setWindowTitle("LayoutPress — Imposição Rápida")
         self.impositor = Impositor()
         self.img: Optional[Image.Image] = None
         # store last loaded file path to build a default export name
         self._last_loaded_path: Optional[str] = None
-    # single-page input (PDF will load first page only)
-    # multipage support removed per request
+        # single-page input (PDF will load first page only)
+        # multipage support removed per request
         self.cor_sangria: Tuple[int, int, int] = (255, 255, 255)
         self._build_ui()
         # prefer an initial 5:4 width:height ratio (resizable)
@@ -69,7 +69,8 @@ class MainWindow(QWidget):
         self.btn_load.setShortcut('Ctrl+O')
         fg_layout.addWidget(self.btn_load)
         self.lbl_file = QLabel("Nenhum arquivo carregado")
-        self.lbl_file.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.lbl_file.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)
         fg_layout.addWidget(self.lbl_file)
         file_group.setLayout(fg_layout)
         controls.addWidget(file_group)
@@ -90,7 +91,8 @@ class MainWindow(QWidget):
         self.spin_h.setToolTip("Altura final em milímetros")
         sg.addWidget(self.spin_h)
         self.chk_keep = QCheckBox("Manter proporção")
-        self.chk_keep.setChecked(True)
+        # default: off (user requested)
+        self.chk_keep.setChecked(False)
         self.chk_keep.setToolTip("Preserva aspecto ao redimensionar")
         sg.addWidget(self.chk_keep)
         size_group.setLayout(sg)
@@ -105,8 +107,17 @@ class MainWindow(QWidget):
             self.cmb_sheet.addItems(list(self.impositor.SHEETS_PT.keys()))
         except Exception:
             self.cmb_sheet.addItems(["A4"])
-        self.cmb_sheet.setToolTip("Selecione o tamanho da folha para a imposição")
+        self.cmb_sheet.setToolTip(
+            "Selecione o tamanho da folha para a imposição")
         ig.addWidget(self.cmb_sheet)
+        # rotation indicator (hidden unless automatic rotation is applied)
+        self.lbl_rot = QLabel("Rotacionado")
+        self.lbl_rot.setToolTip(
+            "Rotação automática aplicada para melhor encaixe")
+        self.lbl_rot.setStyleSheet(
+            'background:#d97706; color:#fff; padding:2px 6px; border-radius:4px; font-size:10px;')
+        self.lbl_rot.setVisible(False)
+        ig.addWidget(self.lbl_rot)
 
         ig.addWidget(QLabel("Unidades:"))
         self.spin_units = QSpinBox()
@@ -135,7 +146,8 @@ class MainWindow(QWidget):
 
         # bleed mode (Português labels)
         self.cmb_bleed = QComboBox()
-        self.cmb_bleed.addItems(["Espelhar Bordas", "Cor Sólida", "Sem Sangria"])
+        self.cmb_bleed.addItems(
+            ["Espelhar Bordas", "Cor Sólida", "Sem Sangria"])
         self.cmb_bleed.setToolTip("Modo de tratamento das bordas/sangria")
         ig.addWidget(self.cmb_bleed)
 
@@ -144,7 +156,8 @@ class MainWindow(QWidget):
         self.btn_color.setToolTip("Seleciona cor para sangria sólida")
         # only enable color button when "Cor Sólida" is selected
         try:
-            self.btn_color.setEnabled(self.cmb_bleed.currentText() == 'Cor Sólida')
+            self.btn_color.setEnabled(
+                self.cmb_bleed.currentText() == 'Cor Sólida')
         except Exception:
             pass
         ig.addWidget(self.btn_color)
@@ -169,7 +182,8 @@ class MainWindow(QWidget):
         self.lbl_preview = QLabel(alignment=Qt.AlignCenter)
         self.lbl_preview.setMinimumSize(600, 480)
         # show graphite background in widget; the sheet image will be pasted with a white border
-        self.lbl_preview.setStyleSheet("background: #4a4a4a; border: 1px solid #333;")
+        self.lbl_preview.setStyleSheet(
+            "background: #4a4a4a; border: 1px solid #333;")
         pv_layout.addWidget(self.lbl_preview)
     # no multipage navigation (single-page preview only)
         preview_box.setLayout(pv_layout)
@@ -177,9 +191,13 @@ class MainWindow(QWidget):
         root.addLayout(controls, 0)
         root.addWidget(preview_box, 1)
 
-        # Footer
-        footer = QLabel("Desenvolvido por wednyfernandes.com.br")
+        # Footer with clickable link
+        footer = QLabel(
+            '<a href="https://wednyfernandes.com.br" style="color:#88b0ff; text-decoration:none;">wednyfernandes.com.br</a>')
+        footer.setTextFormat(Qt.RichText)
+        footer.setOpenExternalLinks(True)
         footer.setAlignment(Qt.AlignCenter)
+        footer.setObjectName('footer')
         footer.setStyleSheet("color: #888; font-size: 10px;")
         main_v = QVBoxLayout()
         main_v.addLayout(root)
@@ -187,24 +205,31 @@ class MainWindow(QWidget):
         self.setLayout(main_v)
 
         # Apply a light modern stylesheet for clarity
-        self.setStyleSheet("QGroupBox { font-weight: bold; } QPushButton { padding: 6px 10px; }")
+        self.setStyleSheet(
+            "QGroupBox { font-weight: bold; } QPushButton { padding: 6px 10px; }")
 
         # Connect many inputs to live preview
         self._connect_live_preview()
         # accept drag and drop files
         self.setAcceptDrops(True)
         # enable/disable color button based on bleed mode
-        self.cmb_bleed.currentTextChanged.connect(lambda txt: self.btn_color.setEnabled(txt == 'Cor Sólida'))
+        self.cmb_bleed.currentTextChanged.connect(
+            lambda txt: self.btn_color.setEnabled(txt == 'Cor Sólida'))
         # default sheet A4
         try:
             self.cmb_sheet.setCurrentText('A4')
         except Exception:
             pass
 
-    # multipage support removed: app now handles a single image (first page of PDF)
+        # multipage support removed: app now handles a single image (first page of PDF)
 
     def load_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Abrir arquivo", "", "Images and PDFs (*.png *.jpg *.jpeg *.pdf)")
+        # open dialog starting in Downloads folder by default
+        import os
+        start_dir = os.path.join(os.path.expanduser('~'), 'Downloads') if os.path.exists(
+            os.path.join(os.path.expanduser('~'), 'Downloads')) else ''
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Abrir arquivo", start_dir, "Images and PDFs (*.png *.jpg *.jpeg *.pdf)")
         if not path:
             return
         try:
@@ -215,7 +240,8 @@ class MainWindow(QWidget):
                 if len(pdf) > 0:
                     p = pdf[0]
                     pix = p.get_pixmap(dpi=self.impositor.dpi)
-                    self.img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                    self.img = Image.frombytes(
+                        'RGB', [pix.width, pix.height], pix.samples)
                 else:
                     self.img = None
             else:
@@ -233,7 +259,8 @@ class MainWindow(QWidget):
             self.spin_h.setValue(h_mm)
 
             # compute best sheet and rotation to maximize units (or switch to larger sheet if needed)
-            best_sheet, best_units, rotate_img = self._find_best_sheet_and_rotation(self.img)
+            best_sheet, best_units, rotate_img = self._find_best_sheet_and_rotation(
+                self.img)
             try:
                 self.cmb_sheet.setCurrentText(best_sheet)
             except Exception:
@@ -247,7 +274,7 @@ class MainWindow(QWidget):
             self.generate_preview()
         except Exception as e:
             self.lbl_file.setText(f"Erro: {e}")
-    
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -265,7 +292,8 @@ class MainWindow(QWidget):
                     if len(pdf) > 0:
                         p = pdf[0]
                         pix = p.get_pixmap(dpi=self.impositor.dpi)
-                        self.img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                        self.img = Image.frombytes(
+                            'RGB', [pix.width, pix.height], pix.samples)
                     else:
                         self.img = None
                 else:
@@ -281,7 +309,8 @@ class MainWindow(QWidget):
         col = QColorDialog.getColor()
         if col.isValid():
             self.cor_sangria = (col.red(), col.green(), col.blue())
-            self.btn_color.setStyleSheet(f"background-color: rgb{self.cor_sangria};")
+            self.btn_color.setStyleSheet(
+                f"background-color: rgb{self.cor_sangria};")
             # regenerate preview after color selection
             self.generate_preview()
 
@@ -295,26 +324,95 @@ class MainWindow(QWidget):
 
     def _connect_live_preview(self) -> None:
         # Connect widgets that should trigger an immediate preview update
-        widgets = [
-            self.spin_w,
-            self.spin_h,
-            self.chk_keep,
-            self.cmb_sheet,
-            self.spin_units,
-            self.spin_bleed,
-            self.cmb_bleed,
-        ]
-        for widget in widgets:
+        # central handler that recomputes and regenerates preview
+        def _safe_connect(sig, handler):
             try:
-                # many Qt widgets expose valueChanged or currentIndexChanged
-                if hasattr(widget, 'valueChanged'):
-                    widget.valueChanged.connect(lambda *_: self.generate_preview())
-                elif hasattr(widget, 'currentIndexChanged'):
-                    widget.currentIndexChanged.connect(lambda *_: self.generate_preview())
+                sig.connect(handler)
             except Exception:
                 pass
-        # checkbox
-        self.chk_keep.stateChanged.connect(lambda *_: self.generate_preview())
+
+        # per-widget connections -> use a single handler to keep behavior consistent
+        _safe_connect(self.spin_w.valueChanged,
+                      lambda *_: self._on_ui_change())
+        _safe_connect(self.spin_h.valueChanged,
+                      lambda *_: self._on_ui_change())
+        _safe_connect(self.spin_units.valueChanged,
+                      lambda *_: self._on_ui_change())
+        _safe_connect(self.spin_bleed.valueChanged,
+                      lambda *_: self._on_ui_change())
+        _safe_connect(self.spin_gap.valueChanged,
+                      lambda *_: self._on_ui_change())
+        _safe_connect(self.chk_keep.stateChanged,
+                      lambda *_: self._on_ui_change())
+        _safe_connect(self.cmb_sheet.currentIndexChanged,
+                      lambda *_: self._on_ui_change())
+        _safe_connect(self.cmb_bleed.currentTextChanged,
+                      lambda *_: self._on_ui_change())
+        # color button already triggers generate_preview in choose_color
+
+    def _recompute_fit(self) -> None:
+        """Recalculate best sheet, units and rotation based on current size inputs.
+
+        This uses the currently loaded image resized to the target mm dimensions. It updates
+        the sheet selection (only if it improves fit) and the `spin_units` range so the
+        UI reflects the true maximum number of units that can fit.
+        """
+        if not getattr(self, 'img', None):
+            return
+        try:
+            # get requested physical size (may be None)
+            w_val = self.spin_w.value()
+            h_val = self.spin_h.value()
+            w = w_val if (w_val is not None and w_val > 0) else None
+            h = h_val if (h_val is not None and h_val > 0) else None
+            # make a resized copy consistent with what preview/export will use
+            resized = self.impositor.resize_image_mm(
+                self.img, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+            best_sheet, best_units, rotate_img = self._find_best_sheet_and_rotation(
+                resized)
+            # update sheet only if it improves fit (or if current is empty)
+            try:
+                # always set reasonable upper bound for units
+                self.spin_units.setRange(1, max(1, best_units))
+                # if current value > best_units, clamp it
+                if self.spin_units.value() > best_units:
+                    self.spin_units.setValue(max(1, best_units))
+                # prefer to set sheet to best choice
+                try:
+                    self.cmb_sheet.setCurrentText(best_sheet)
+                except Exception:
+                    pass
+                # remember rotation decision for export/preview
+                self._rotate_for_export = rotate_img
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # update rotation indicator whenever we recompute fit
+        try:
+            self.lbl_rot.setVisible(
+                bool(getattr(self, '_rotate_for_export', False)))
+        except Exception:
+            pass
+
+    def _on_ui_change(self) -> None:
+        """Unified handler for UI changes: recompute fit and refresh preview, and update rotation indicator."""
+        try:
+            # recompute may change sheet/units/rotation
+            self._recompute_fit()
+        except Exception:
+            pass
+        try:
+            # update rotation indicator explicitly
+            self.lbl_rot.setVisible(
+                bool(getattr(self, '_rotate_for_export', False)))
+        except Exception:
+            pass
+        try:
+            self.generate_preview()
+        except Exception:
+            pass
 
     def _units_for_image_and_sheet(self, img: Image.Image, folha: str, sangria_mm: float, gap_mm: float, margem_mm: float = 5.0) -> int:
         """Compute how many units of img fit on given sheet name considering bleed and gap."""
@@ -355,7 +453,8 @@ class MainWindow(QWidget):
 
         for rotate in (False, True):
             test_img = img.rotate(90, expand=True) if rotate else img
-            units = self._units_for_image_and_sheet(test_img, selected, sangria, gap)
+            units = self._units_for_image_and_sheet(
+                test_img, selected, sangria, gap)
             if units > best_units:
                 best_units = units
                 best_rotate = rotate
@@ -368,11 +467,13 @@ class MainWindow(QWidget):
         for name, _dims in sheets:
             for rotate in (False, True):
                 test_img = img.rotate(90, expand=True) if rotate else img
-                units = self._units_for_image_and_sheet(test_img, name, sangria, gap)
+                units = self._units_for_image_and_sheet(
+                    test_img, name, sangria, gap)
                 if units >= 1:
                     return name, units, rotate
 
-        largest = max(self.impositor.SHEETS_PT.items(), key=lambda kv: kv[1][0] * kv[1][1])[0]
+        largest = max(self.impositor.SHEETS_PT.items(),
+                      key=lambda kv: kv[1][0] * kv[1][1])[0]
         units = self._units_for_image_and_sheet(img, largest, sangria, gap)
         return largest, units, False
 
@@ -429,7 +530,8 @@ class MainWindow(QWidget):
                         cx = x + (max_w - th.width) // 2
                         cy = y + (max_h - th.height) // 2
                         # create white background cell
-                        cell = Image.new('RGB', (th.width, th.height), (255, 255, 255))
+                        cell = Image.new(
+                            'RGB', (th.width, th.height), (255, 255, 255))
                         tiled.paste(cell, (cx, cy))
                         tiled.paste(th, (cx, cy))
                         x += max_w + gap
@@ -438,7 +540,8 @@ class MainWindow(QWidget):
 
                 composite = tiled
                 pix = self.pil_to_pixmap(composite)
-                scaled = pix.scaled(self.lbl_preview.width(), self.lbl_preview.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                scaled = pix.scaled(self.lbl_preview.width(), self.lbl_preview.height(
+                ), Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.lbl_preview.setPixmap(scaled)
                 return
             except Exception as e:
@@ -447,7 +550,8 @@ class MainWindow(QWidget):
 
         # proceed with single-image preview below
         if (w is not None) or (h is not None):
-            img = self.impositor.resize_image_mm(img, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+            img = self.impositor.resize_image_mm(
+                img, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
         modo = self._bleed_mode()
         # apply rotation chosen to maximize fit for preview
         if getattr(self, '_rotate_for_export', False):
@@ -456,34 +560,42 @@ class MainWindow(QWidget):
             # Determine unidades but clamp to what actually fits on the sheet
             folha = self.cmb_sheet.currentText()
             unidades_requested = self.spin_units.value()
-            max_fit = self._units_for_image_and_sheet(img, folha, self.spin_bleed.value(), self.spin_gap.value())
+            max_fit = self._units_for_image_and_sheet(
+                img, folha, self.spin_bleed.value(), self.spin_gap.value())
             unidades = min(max(1, max_fit), max(1, unidades_requested))
             # If only one unit, compute margins to center the item on the sheet
             # folha already assigned above
             if unidades == 1:
                 # Build bleed image to compute size in points
-                img_bleed = self.impositor.add_bleed(img, self.spin_bleed.value(), modo, self.cor_sangria)
+                img_bleed = self.impositor.add_bleed(
+                    img, self.spin_bleed.value(), modo, self.cor_sangria)
                 img_w_pt = img_bleed.width * 72 / self.impositor.dpi
                 img_h_pt = img_bleed.height * 72 / self.impositor.dpi
-                folha_w_pt, folha_h_pt = self.impositor.SHEETS_PT.get(folha, self.impositor.SHEETS_PT['A4'])
+                folha_w_pt, folha_h_pt = self.impositor.SHEETS_PT.get(
+                    folha, self.impositor.SHEETS_PT['A4'])
                 margin_x_pt = max(0.0, (folha_w_pt - img_w_pt) / 2.0)
                 margin_mm = margin_x_pt / PT_PER_MM
-                preview = self.impositor.generate_preview(img, folha=folha, unidades=unidades, sangria_mm=self.spin_bleed.value(), modo_sangria=modo, cor_sangria=self.cor_sangria, margem_mm=margin_mm, gap_mm=self.spin_gap.value())
+                preview = self.impositor.generate_preview(img, folha=folha, unidades=unidades, sangria_mm=self.spin_bleed.value(
+                ), modo_sangria=modo, cor_sangria=self.cor_sangria, margem_mm=margin_mm, gap_mm=self.spin_gap.value())
             else:
-                preview = self.impositor.generate_preview(img, folha=self.cmb_sheet.currentText(), unidades=unidades, sangria_mm=self.spin_bleed.value(), modo_sangria=modo, cor_sangria=self.cor_sangria, gap_mm=self.spin_gap.value())
+                preview = self.impositor.generate_preview(img, folha=self.cmb_sheet.currentText(), unidades=unidades, sangria_mm=self.spin_bleed.value(
+                ), modo_sangria=modo, cor_sangria=self.cor_sangria, gap_mm=self.spin_gap.value())
             # compose over graphite background with a white sheet inset for better contrast
             try:
                 padding = 20
-                bg = Image.new('RGB', (preview.width + padding * 2, preview.height + padding * 2), (74, 74, 74))
+                bg = Image.new('RGB', (preview.width + padding * 2,
+                               preview.height + padding * 2), (74, 74, 74))
                 # create white sheet area
-                sheet_box = Image.new('RGB', (preview.width, preview.height), (255, 255, 255))
+                sheet_box = Image.new(
+                    'RGB', (preview.width, preview.height), (255, 255, 255))
                 bg.paste(sheet_box, (padding, padding))
                 bg.paste(preview, (padding, padding))
                 composite = bg
             except Exception:
                 composite = preview
             pix = self.pil_to_pixmap(composite)
-            scaled = pix.scaled(self.lbl_preview.width(), self.lbl_preview.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled = pix.scaled(self.lbl_preview.width(), self.lbl_preview.height(
+            ), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.lbl_preview.setPixmap(scaled)
         except Exception as e:
             self.lbl_preview.setText(f"Erro no preview: {e}")
@@ -497,7 +609,8 @@ class MainWindow(QWidget):
         try:
             if self._last_loaded_path:
                 import os
-                base = os.path.splitext(os.path.basename(self._last_loaded_path))[0]
+                base = os.path.splitext(
+                    os.path.basename(self._last_loaded_path))[0]
                 default_name = f"{base} - ajustado.pdf"
         except Exception:
             default_name = "output.pdf"
@@ -505,12 +618,15 @@ class MainWindow(QWidget):
         # prefer to open save dialog in same folder as last loaded file
         try:
             import os
-            initial_dir = os.path.dirname(self._last_loaded_path) if self._last_loaded_path else ''
-            start = os.path.join(initial_dir, default_name) if initial_dir else default_name
+            initial_dir = os.path.dirname(
+                self._last_loaded_path) if self._last_loaded_path else ''
+            start = os.path.join(
+                initial_dir, default_name) if initial_dir else default_name
         except Exception:
             start = default_name
 
-        save_path, _ = QFileDialog.getSaveFileName(self, "Salvar PDF", start, "PDF Files (*.pdf)")
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "Salvar PDF", start, "PDF Files (*.pdf)")
         if not save_path:
             return
         w_val = self.spin_w.value()
@@ -519,44 +635,66 @@ class MainWindow(QWidget):
         h = h_val if (h_val is not None and h_val > 0) else None
         img = self.img
         if (w is not None) or (h is not None):
-            img = self.impositor.resize_image_mm(img, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+            img = self.impositor.resize_image_mm(
+                img, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
         modo = self._bleed_mode()
         try:
             folha = self.cmb_sheet.currentText()
             # rotate image if earlier decision indicated better fit
-            img_to_export = img.rotate(90, expand=True) if getattr(self, '_rotate_for_export', False) else img
+            img_to_export = img.rotate(90, expand=True) if getattr(
+                self, '_rotate_for_export', False) else img
             # limit unidades to what fits
-            max_fit = self._units_for_image_and_sheet(img_to_export, folha, self.spin_bleed.value(), self.spin_gap.value())
+            max_fit = self._units_for_image_and_sheet(
+                img_to_export, folha, self.spin_bleed.value(), self.spin_gap.value())
             unidades = min(self.spin_units.value(), max(1, max_fit))
             # If single unit, compute margin so the item is centered on the page
             # compute margin when single unit requested so it's centered
             if unidades == 1:
-                img_bleed = self.impositor.add_bleed(img_to_export, self.spin_bleed.value(), modo, self.cor_sangria)
+                img_bleed = self.impositor.add_bleed(
+                    img_to_export, self.spin_bleed.value(), modo, self.cor_sangria)
                 img_w_pt = img_bleed.width * 72 / self.impositor.dpi
-                folha_w_pt, folha_h_pt = self.impositor.SHEETS_PT.get(folha, self.impositor.SHEETS_PT['A4'])
+                folha_w_pt, folha_h_pt = self.impositor.SHEETS_PT.get(
+                    folha, self.impositor.SHEETS_PT['A4'])
                 margin_x_pt = max(0.0, (folha_w_pt - img_w_pt) / 2.0)
                 margem_mm = margin_x_pt / PT_PER_MM
-                self.impositor.impose_to_pdf(img_to_export, folha=folha, unidades=unidades, sangria_mm=self.spin_bleed.value(), modo_sangria=modo, margem_mm=margem_mm, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria)
+                self.impositor.impose_to_pdf(img_to_export, folha=folha, unidades=unidades, sangria_mm=self.spin_bleed.value(
+                ), modo_sangria=modo, margem_mm=margem_mm, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria)
             else:
-                self.impositor.impose_to_pdf(img_to_export, folha=self.cmb_sheet.currentText(), unidades=unidades, sangria_mm=self.spin_bleed.value(), modo_sangria=modo, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria)
-            self.lbl_file.setText(f"Exportado: {save_path}")
+                self.impositor.impose_to_pdf(img_to_export, folha=self.cmb_sheet.currentText(), unidades=unidades, sangria_mm=self.spin_bleed.value(
+                ), modo_sangria=modo, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria)
+            # show completed status and debug info about rotation
+            rotated = bool(getattr(self, '_rotate_for_export', False))
+            self.lbl_file.setText(
+                f"Exportado: {save_path}  (Rotacionado: {rotated})")
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self, "Exportado", f"Export concluído:\n{save_path}\nRotacionado: {rotated}")
+            except Exception:
+                pass
         except Exception as e:
             self.lbl_file.setText(f"Erro exportar: {e}")
 
 
 def main() -> None:
     app = QApplication(sys.argv)
-    # try to load a dark theme qss from the application folder
+    # try to load a dark theme qss from the application folder or PyInstaller bundle
     try:
         import os
-        base_dir = os.path.dirname(__file__)
+        base_dir = None
+        # when running as a PyInstaller onefile bundle the data files are unpacked to _MEIPASS
+        if getattr(sys, 'frozen', False):
+            base_dir = getattr(sys, '_MEIPASS', None)
+        if not base_dir:
+            base_dir = os.path.dirname(__file__)
         qss_path = os.path.join(base_dir, 'dark_theme.qss')
         if os.path.exists(qss_path):
             with open(qss_path, 'r', encoding='utf-8') as f:
                 app.setStyleSheet(f.read())
         else:
             # fallback small stylesheet if qss not found
-            app.setStyleSheet("QGroupBox { font-weight: bold; } QPushButton { padding: 6px 10px; }")
+            app.setStyleSheet(
+                "QGroupBox { font-weight: bold; } QPushButton { padding: 6px 10px; }")
     except Exception:
         pass
     w = MainWindow()

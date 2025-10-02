@@ -78,3 +78,82 @@ Coloque a licença do projeto aqui (por exemplo, MIT) se aplicável.
 ---
 
 Se precisar que eu gere o executável final (`dist\impositor_app.exe`) agora eu posso rodar o PyInstaller neste ambiente e reportar o resultado (tamanho do EXE, logs e se o `dark_theme.qss` e o `app_icon.ico` foram incluídos corretamente). Diga quando posso prosseguir.
+
+---
+
+# LayoutPress
+
+> Ferramenta rápida e prática para preparar layouts de impressão — pré-visualização WYSIWYG e exportação de PDFs prontos para produção.
+
+LayoutPress (anteriormente "Impositor App") é uma pequena aplicação desktop que ajuda a arranjar cópias de um trabalho na folha final (imposição), aplicando sangria e gerando um PDF pronto para impressora ou CTP.
+
+## Destaques
+
+- Pré-visualização em tempo real da folha final (o que você vê é o que será exportado).
+- Controle de sangria (bleed) com cor de sangria configurável para fácil verificação.
+- Redimensionamento e ajuste de unidades por folha com cálculo automático do máximo que cabe.
+- Exportação para PDF usando ReportLab, compatível com fluxos de pré-impressão.
+- Empacotável com PyInstaller (já existe um `impositor_app.spec` preparado).
+
+## Conteúdo do repositório
+
+- `main.py` — Interface gráfica (PySide6).
+- `impositor.py` — Lógica de imposição (Pillow + ReportLab).
+- `dark_theme.qss` — Estilo opcional (tema escuro).
+- `app_icon.ico` — Ícone do aplicativo (incluído para empacotamento).
+- `impositor_app.spec` — Spec do PyInstaller.
+- `requirements.txt` — Dependências do projeto.
+
+## Requisitos
+
+- Python 3.10+ (testado com 3.13)
+- Instale dependências em um virtualenv:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+## Rodando durante o desenvolvimento
+
+```powershell
+python main.py
+```
+
+Abra um PDF (ou imagem) e ajuste os parâmetros na aba "Imposição". A pré-visualização atualiza enquanto você muda valores.
+
+## Gerar o executável (Windows)
+
+O repositório já inclui uma spec para PyInstaller que inclui `dark_theme.qss` e `app_icon.ico`. Para gerar o EXE:
+
+```powershell
+pyinstaller --clean impostor_app.spec
+```
+
+Ou usando a linha de comando direta:
+
+```powershell
+pyinstaller --onefile --windowed --add-data "dark_theme.qss;." --add-data "app_icon.ico;." --icon app_icon.ico main.py
+```
+
+Após gerar o onefile EXE, os arquivos de dados são extraídos para uma pasta temporária em runtime (`sys._MEIPASS`). O app tenta carregar `dark_theme.qss` do bundle extraído quando empacotado.
+
+## Como contribuir
+
+1. Fork
+2. Crie uma branch (ex: `feature/nome-da-feature`)
+3. Abra um Pull Request descrevendo a mudança
+
+## Licença
+
+Escolha e adicione a licença desejada (ex: MIT) aqui.
+
+---
+
+Se quiser, eu também posso:
+
+- Rodar o PyInstaller aqui e gerar `dist\impositor_app.exe` e verificar se `dark_theme.qss` e `app_icon.ico` foram empacotados.
+- Gerar um README em inglês também.
+
+Próximo passo: vou tentar adicionar o remote `https://github.com/WednyFernandes/LayoutPress` e fazer push da branch `dev`. Vou rodar os comandos git e reportar a saída.
