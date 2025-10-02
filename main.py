@@ -457,7 +457,7 @@ class MainWindow(QWidget):
         Uses the repository defined below. Returns version string or empty on error.
         """
         try:
-            import requests
+            import requests  # type: ignore[import]
         except Exception:
             return ""
         try:
@@ -473,7 +473,7 @@ class MainWindow(QWidget):
 
     def _download_asset(self, url: str, dest_path: str) -> bool:
         try:
-            import requests
+            import requests  # type: ignore[import]
             with requests.get(url, stream=True, timeout=30) as r:
                 r.raise_for_status()
                 with open(dest_path, 'wb') as f:
@@ -510,7 +510,7 @@ class MainWindow(QWidget):
 
         # Get release asset via GitHub Releases API
         try:
-            import requests
+            import requests  # type: ignore[import]
             api = f'https://api.github.com/repos/WednyFernandes/LayoutPress/releases/latest'
             r = requests.get(api, timeout=10)
             r.raise_for_status()
