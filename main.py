@@ -11,6 +11,9 @@ This file provides a compact, syntactically-clean PySide6 GUI that:
 from typing import Optional, Tuple
 import io
 import sys
+import os
+import subprocess
+import tempfile
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -191,17 +194,34 @@ class MainWindow(QWidget):
         root.addLayout(controls, 0)
         root.addWidget(preview_box, 1)
 
-        # Footer with clickable link
-        footer = QLabel(
-            '<a href="https://wednyfernandes.com.br" style="color:#88b0ff; text-decoration:none;">wednyfernandes.com.br</a>')
-        footer.setTextFormat(Qt.RichText)
-        footer.setOpenExternalLinks(True)
-        footer.setAlignment(Qt.AlignCenter)
-        footer.setObjectName('footer')
-        footer.setStyleSheet("color: #888; font-size: 10px;")
+        # Footer with clickable link and version on the right
+        footer_h = QHBoxLayout()
+        left_lbl = QLabel('Desenvolvido por ')
+        left_lbl.setStyleSheet("color: #888; font-size: 10px;")
+        link = QLabel('<a href="https://wednyfernandes.com.br" style="color:#88b0ff; text-decoration:none;">wednyfernandes.com.br</a>')
+        link.setTextFormat(Qt.RichText)
+        link.setOpenExternalLinks(True)
+        link.setStyleSheet("color: #88b0ff; font-size: 10px;")
+        left_box = QHBoxLayout()
+        left_box.addWidget(left_lbl)
+        left_box.addWidget(link)
+        left_box.addStretch()
+
+        # Version label on the right
+        self.lbl_version = QLabel("")
+        self.lbl_version.setStyleSheet("color: #888; font-size: 10px;")
+        # small update button
+        self.btn_check_updates = QPushButton("Verificar atualizações")
+        self.btn_check_updates.setToolTip("Verifica se há uma versão nova disponível")
+        self.btn_check_updates.clicked.connect(self.check_for_updates)
+
+        footer_h.addLayout(left_box)
+        footer_h.addWidget(self.btn_check_updates)
+        footer_h.addWidget(self.lbl_version)
+
         main_v = QVBoxLayout()
         main_v.addLayout(root)
-        main_v.addWidget(footer)
+        main_v.addLayout(footer_h)
         self.setLayout(main_v)
 
         # Apply a light modern stylesheet for clarity
@@ -220,6 +240,12 @@ class MainWindow(QWidget):
             self.cmb_sheet.setCurrentText('A4')
         except Exception:
             pass
+
+        # load local version and display
+        try:
+            self.lbl_version.setText(self._read_local_version())
+        except Exception:
+            self.lbl_version.setText("")
 
         # multipage support removed: app now handles a single image (first page of PDF)
 
@@ -413,6 +439,111 @@ class MainWindow(QWidget):
             self.generate_preview()
         except Exception:
             pass
+
+    def _read_local_version(self) -> str:
+        try:
+            base = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+            vfile = os.path.join(base, 'VERSION')
+            if os.path.exists(vfile):
+                with open(vfile, 'r', encoding='utf-8') as f:
+                    return f.read().strip()
+        except Exception:
+            pass
+        return ""
+
+    def _get_remote_version(self) -> str:
+        """Fetch VERSION from the GitHub repo branch (raw).
+
+        Uses the repository defined below. Returns version string or empty on error.
+        """
+        try:
+            import requests
+        except Exception:
+            return ""
+        try:
+            owner = 'WednyFernandes'
+            repo = 'LayoutPress'
+            branch = 'dev'
+            url = f'https://raw.githubusercontent.com/{owner}/{repo}/{branch}/VERSION'
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            return r.text.strip()
+        except Exception:
+            return ""
+
+    def _download_asset(self, url: str, dest_path: str) -> bool:
+        try:
+            import requests
+            with requests.get(url, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                with open(dest_path, 'wb') as f:
+                    for chunk in r.iter_content(8192):
+                        f.write(chunk)
+            return True
+        except Exception:
+            return False
+
+    def check_for_updates(self) -> None:
+        """Check remote VERSION and prompt user to download and update if newer."""
+        try:
+            from PySide6.QtWidgets import QMessageBox
+        except Exception:
+            return
+
+        local = self._read_local_version() or '0.0.0'
+        remote = self._get_remote_version() or ''
+        if not remote:
+            QMessageBox.information(self, 'Atualizações', 'Não foi possível verificar atualizações (sem conexão).')
+            return
+        try:
+            from packaging.version import parse as parse_version
+            if parse_version(remote) <= parse_version(local):
+                QMessageBox.information(self, 'Atualizações', f'Versão atual ({local}) está atualizada.')
+                return
+        except Exception:
+            pass
+
+        # Ask user to download and update
+        reply = QMessageBox.question(self, 'Atualização disponível', f'Versão {remote} disponível (você tem {local}). Deseja baixar e instalar?', QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        # Get release asset via GitHub Releases API
+        try:
+            import requests
+            api = f'https://api.github.com/repos/WednyFernandes/LayoutPress/releases/latest'
+            r = requests.get(api, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            asset_url = None
+            for a in data.get('assets', []):
+                name = a.get('name', '').lower()
+                if name.endswith('.exe') or name.endswith('.zip'):
+                    asset_url = a.get('browser_download_url')
+                    break
+            if not asset_url:
+                QMessageBox.information(self, 'Atualizações', 'Nenhum pacote de atualização encontrado nos releases.')
+                return
+            # download to temp
+            import tempfile
+            tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(asset_url)[1])
+            tmpf.close()
+            ok = self._download_asset(asset_url, tmpf.name)
+            if not ok:
+                QMessageBox.information(self, 'Atualizações', 'Falha ao baixar o pacote de atualização.')
+                return
+            # call updater (python updater.py target newfile) or if frozen, pass exe path
+            target = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+            updater_py = os.path.join(os.path.dirname(__file__), 'updater.py')
+            try:
+                subprocess.Popen([sys.executable, updater_py, target, tmpf.name], close_fds=True)
+            except Exception:
+                QMessageBox.information(self, 'Atualizações', 'Não foi possível iniciar o atualizador.')
+                return
+            QMessageBox.information(self, 'Atualizações', 'O atualizador foi iniciado. O aplicativo será fechado para aplicar a atualização.')
+            os._exit(0)
+        except Exception as e:
+            QMessageBox.information(self, 'Atualizações', f'Erro ao verificar atualizações: {e}')
 
     def _units_for_image_and_sheet(self, img: Image.Image, folha: str, sangria_mm: float, gap_mm: float, margem_mm: float = 5.0) -> int:
         """Compute how many units of img fit on given sheet name considering bleed and gap."""
