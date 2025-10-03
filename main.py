@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 from PySide6.QtGui import QPixmap, QImage, QIcon
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from impositor import Impositor, PT_PER_MM
 from PIL import Image
@@ -47,11 +47,14 @@ class MainWindow(QWidget):
         super().__init__()
         self.setWindowTitle("LayoutPress — Imposição Rápida")
         self.impositor = Impositor()
-        self.img: Optional[Image.Image] = None
+        # support single or multiple source pages/images
+        self.imgs: list[Image.Image] = []
+        # per-source rotation state (in 90deg steps, 0/90/180/270)
+        self.imgs_rotation: list[int] = []
+        self.current_page: int = 0
         # store last loaded file path to build a default export name
         self._last_loaded_path: Optional[str] = None
         # single-page input (PDF will load first page only)
-        # multipage support removed per request
         self.cor_sangria: Tuple[int, int, int] = (255, 255, 255)
         self._build_ui()
         # prefer an initial 5:4 width:height ratio (resizable)
@@ -145,7 +148,24 @@ class MainWindow(QWidget):
         self.spin_gap.setToolTip("Espaçamento entre unidades (mm)")
         ig.addWidget(self.spin_gap)
 
-        # (multipage controls removed)
+        # pagination controls (navigate loaded source pages)
+        self.btn_prev_page = QPushButton("◀")
+        self.btn_prev_page.setToolTip("Página anterior / folha anterior")
+        self.btn_prev_page.setEnabled(False)
+        ig.addWidget(self.btn_prev_page)
+        self.lbl_page_info = QLabel("")
+        ig.addWidget(self.lbl_page_info)
+        self.btn_next_page = QPushButton("▶")
+        self.btn_next_page.setToolTip("Próxima página / próxima folha")
+        self.btn_next_page.setEnabled(False)
+        ig.addWidget(self.btn_next_page)
+
+        # multipage options (hidden unless multiple images/pages are loaded)
+        self.cmb_multipage = QComboBox()
+        self.cmb_multipage.addItems(["Repetir por folha", "Distribuir várias por folha"])
+        self.cmb_multipage.setToolTip("Modo para arquivos com múltiplas páginas")
+        self.cmb_multipage.setVisible(False)
+        ig.addWidget(self.cmb_multipage)
 
         # bleed mode (Português labels)
         self.cmb_bleed = QComboBox()
@@ -232,6 +252,13 @@ class MainWindow(QWidget):
         self._connect_live_preview()
         # accept drag and drop files
         self.setAcceptDrops(True)
+        # periodic preview refresh (every 5 seconds) as a safety net
+        try:
+            self._preview_timer = QTimer(self)
+            self._preview_timer.timeout.connect(self.generate_preview)
+            self._preview_timer.start(5000)
+        except Exception:
+            pass
         # enable/disable color button based on bleed mode
         self.cmb_bleed.currentTextChanged.connect(
             lambda txt: self.btn_color.setEnabled(txt == 'Cor Sólida'))
@@ -254,39 +281,45 @@ class MainWindow(QWidget):
         import os
         start_dir = os.path.join(os.path.expanduser('~'), 'Downloads') if os.path.exists(
             os.path.join(os.path.expanduser('~'), 'Downloads')) else ''
-        path, _ = QFileDialog.getOpenFileName(
+        paths, _ = QFileDialog.getOpenFileNames(
             self, "Abrir arquivo", start_dir, "Images and PDFs (*.png *.jpg *.jpeg *.pdf)")
-        if not path:
+        if not paths:
             return
         try:
+            self.imgs = []
+            self.imgs_rotation = []
             # handle PDFs by extracting all pages
-            if path.lower().endswith('.pdf'):
-                pdf = fitz.open(path)
-                # only load first page for single-page workflow
-                if len(pdf) > 0:
-                    p = pdf[0]
-                    pix = p.get_pixmap(dpi=self.impositor.dpi)
-                    self.img = Image.frombytes(
-                        'RGB', [pix.width, pix.height], pix.samples)
+            for path in paths:
+                if path.lower().endswith('.pdf'):
+                    pdf = fitz.open(path)
+                    for p in pdf:
+                        pix = p.get_pixmap(dpi=self.impositor.dpi)
+                        img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                        self.imgs.append(img)
+                        self.imgs_rotation.append(0)
                 else:
-                    self.img = None
-            else:
-                self.img = self.impositor.read_image(path)
+                    im = self.impositor.read_image(path)
+                    self.imgs.append(im)
+                    self.imgs_rotation.append(0)
 
             # remember loaded path for export filename default
             self._last_loaded_path = path
             self.lbl_file.setText(path.split("/")[-1])
-            # set default size to file's size in mm
-            w_px, h_px = self.img.width, self.img.height
-            dpi = self.impositor.dpi
-            w_mm = round(w_px * 25.4 / dpi, 1)
-            h_mm = round(h_px * 25.4 / dpi, 1)
-            self.spin_w.setValue(w_mm)
-            self.spin_h.setValue(h_mm)
 
-            # compute best sheet and rotation to maximize units (or switch to larger sheet if needed)
-            best_sheet, best_units, rotate_img = self._find_best_sheet_and_rotation(
-                self.img)
+            # set default size to first file's size in mm
+            if self.imgs:
+                w_px, h_px = self.imgs[0].width, self.imgs[0].height
+                dpi = self.impositor.dpi
+                w_mm = round(w_px * 25.4 / dpi, 1)
+                h_mm = round(h_px * 25.4 / dpi, 1)
+                self.spin_w.setValue(w_mm)
+                self.spin_h.setValue(h_mm)
+
+            # compute best sheet and rotation based on first image
+            if self.imgs:
+                best_sheet, best_units, rotate_img = self._find_best_sheet_and_rotation(self.imgs[0])
+            else:
+                best_sheet, best_units, rotate_img = ('A4', 1, False)
             try:
                 self.cmb_sheet.setCurrentText(best_sheet)
             except Exception:
@@ -295,8 +328,11 @@ class MainWindow(QWidget):
             self.spin_units.setValue(max(1, best_units))
             self._rotate_for_export = rotate_img
 
+            # pagination init
+            self.current_page = 0
+            self._update_pagination_controls()
+
             # auto-generate preview (live)
-            # update preview
             self.generate_preview()
         except Exception as e:
             self.lbl_file.setText(f"Erro: {e}")
@@ -311,22 +347,30 @@ class MainWindow(QWidget):
             return
         path = urls[0].toLocalFile()
         if path:
+            # reuse load_file logic by setting start path and calling load behavior
             try:
-                # mimic load_file behavior for PDFs
+                # allow dropping a file path to load it
+                self._last_loaded_path = path
+                # call load_file-like behavior by delegating to load_file but passing path
+                # hack: set QFileDialog default selection by temporarily calling the same logic
+                # simpler: replicate the core bits
+                self.imgs = []
+                self.imgs_rotation = []
                 if path.lower().endswith('.pdf'):
                     pdf = fitz.open(path)
-                    if len(pdf) > 0:
-                        p = pdf[0]
+                    for p in pdf:
                         pix = p.get_pixmap(dpi=self.impositor.dpi)
-                        self.img = Image.frombytes(
-                            'RGB', [pix.width, pix.height], pix.samples)
-                    else:
-                        self.img = None
+                        img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                        self.imgs.append(img)
+                        self.imgs_rotation.append(0)
                 else:
-                    self.img = self.impositor.read_image(path)
+                    im = self.impositor.read_image(path)
+                    self.imgs.append(im)
+                    self.imgs_rotation.append(0)
 
-                self._last_loaded_path = path
-                self.lbl_file.setText(path.split("/")[-1])
+                self.lbl_file.setText(path.split('/')[-1])
+                self.current_page = 0
+                self._update_pagination_controls()
                 self.generate_preview()
             except Exception as e:
                 self.lbl_file.setText(f"Erro: {e}")
@@ -374,7 +418,20 @@ class MainWindow(QWidget):
                       lambda *_: self._on_ui_change())
         _safe_connect(self.cmb_bleed.currentTextChanged,
                       lambda *_: self._on_ui_change())
+        _safe_connect(self.cmb_multipage.currentIndexChanged, lambda *_: self._on_ui_change())
+        # pagination buttons
+        try:
+            _safe_connect(self.btn_prev_page.clicked, lambda *_: self._change_page(-1))
+            _safe_connect(self.btn_next_page.clicked, lambda *_: self._change_page(1))
+        except Exception:
+            pass
         # color button already triggers generate_preview in choose_color
+
+        # enable clicking on preview for rotation toggling
+        try:
+            self.lbl_preview.mousePressEvent = self._preview_clicked
+        except Exception:
+            pass
 
     def _recompute_fit(self) -> None:
         """Recalculate best sheet, units and rotation based on current size inputs.
@@ -383,7 +440,7 @@ class MainWindow(QWidget):
         the sheet selection (only if it improves fit) and the `spin_units` range so the
         UI reflects the true maximum number of units that can fit.
         """
-        if not getattr(self, 'img', None):
+        if not self.imgs:
             return
         try:
             # get requested physical size (may be None)
@@ -393,9 +450,8 @@ class MainWindow(QWidget):
             h = h_val if (h_val is not None and h_val > 0) else None
             # make a resized copy consistent with what preview/export will use
             resized = self.impositor.resize_image_mm(
-                self.img, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
-            best_sheet, best_units, rotate_img = self._find_best_sheet_and_rotation(
-                resized)
+                self.imgs[self.current_page], largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+            best_sheet, best_units, rotate_img = self._find_best_sheet_and_rotation(resized)
             # update sheet only if it improves fit (or if current is empty)
             try:
                 # always set reasonable upper bound for units
@@ -422,6 +478,117 @@ class MainWindow(QWidget):
         except Exception:
             pass
 
+    def _preview_clicked(self, event) -> None:
+        """Handle mouse clicks on the preview; when tiled view is shown, rotate the clicked image slot by 90 degrees."""
+        try:
+            if not self.imgs:
+                return
+            # we only support click-to-rotate on tiled previews (when unidades > 1 or multiple images)
+            unidades_req = max(1, self.spin_units.value())
+            start_idx = self.current_page * unidades_req
+            end_idx = start_idx + unidades_req
+            imgs_slice = self.imgs[start_idx:end_idx]
+            if not imgs_slice:
+                return
+
+            # build same tiled dims as generate_preview to map click coords
+            count = len(imgs_slice)
+            # compute grid from requested unidades (pages per sheet) to keep layout stable
+            unidades_grid = max(1, unidades_req)
+            cols = int(math.ceil(math.sqrt(unidades_grid)))
+            rows = int(math.ceil(unidades_grid / cols))
+            gap = int(max(0, round(self.spin_gap.value() * (self.impositor.dpi / 25.4))))
+
+            thumbs = []
+            max_w = max_h = 0
+            for p in imgs_slice:
+                th = p.copy()
+                th.thumbnail((600, 600), Image.LANCZOS)
+                thumbs.append(th)
+                max_w = max(max_w, th.width)
+                max_h = max(max_h, th.height)
+
+            page_pad = 2
+            slot_w = max_w + page_pad * 2
+            slot_h = max_h + page_pad * 2
+            total_w = cols * slot_w + (cols + 1) * gap
+            total_h = rows * slot_h + (rows + 1) * gap
+
+            # find clicked position mapped into tiled image coordinates
+            px = event.pos().x()
+            py = event.pos().y()
+            lbl_w = self.lbl_preview.width()
+            lbl_h = self.lbl_preview.height()
+            # map px,py from label space into bg image space based on scaling used in generate_preview
+            try:
+                pixmap = self.lbl_preview.pixmap()
+                if pixmap is None:
+                    return
+                pm_w = pixmap.width()
+                pm_h = pixmap.height()
+                # compute top-left of pixmap within label
+                offset_x = max(0, (lbl_w - pm_w) // 2)
+                offset_y = max(0, (lbl_h - pm_h) // 2)
+                rel_x = px - offset_x
+                rel_y = py - offset_y
+                if rel_x < 0 or rel_y < 0 or rel_x >= pm_w or rel_y >= pm_h:
+                    return
+
+                # bg dimensions: sheet placed on bg with padding
+                folha_w_pt, folha_h_pt = self.impositor.SHEETS_PT.get(self.cmb_sheet.currentText(), self.impositor.SHEETS_PT['A4'])
+                sheet_w = int(round(folha_w_pt))
+                sheet_h = int(round(folha_h_pt))
+                padding = 20
+                bg_w = sheet_w + padding * 2
+                bg_h = sheet_h + padding * 2
+
+                # compute scale from displayed pixmap to bg image
+                scale_x = bg_w / pm_w
+                scale_y = bg_h / pm_h
+                bx = int(rel_x * scale_x)
+                by = int(rel_y * scale_y)
+
+                # map into sheet coordinates by removing padding
+                tx = bx - padding
+                ty = by - padding
+            except Exception:
+                return
+
+            # iterate cells to find which slot was clicked (slot coords are in sheet space)
+            i = 0
+            y = gap
+            found = None
+            for r in range(rows):
+                x = gap
+                for c in range(cols):
+                    if i >= count:
+                        break
+                    cell_x = x
+                    cell_y = y
+                    if tx >= cell_x and tx <= cell_x + slot_w and ty >= cell_y and ty <= cell_y + slot_h:
+                        found = i
+                        break
+                    x += slot_w + gap
+                    i += 1
+                if found is not None:
+                    break
+                y += slot_h + gap
+
+            if found is None:
+                return
+
+            global_idx = start_idx + found
+            # toggle rotation by +90 degrees
+            if global_idx >= len(self.imgs_rotation):
+                # ensure list is large enough
+                while len(self.imgs_rotation) <= global_idx:
+                    self.imgs_rotation.append(0)
+            self.imgs_rotation[global_idx] = (self.imgs_rotation[global_idx] + 90) % 360
+            # regenerate preview to show rotation indicator
+            self.generate_preview()
+        except Exception:
+            return
+
     def _on_ui_change(self) -> None:
         """Unified handler for UI changes: recompute fit and refresh preview, and update rotation indicator."""
         try:
@@ -439,6 +606,45 @@ class MainWindow(QWidget):
             self.generate_preview()
         except Exception:
             pass
+
+    def _update_pagination_controls(self) -> None:
+        # interpret current_page as sheet index; compute total sheets based on unidades (pages per sheet)
+        unidades = max(1, self.spin_units.value())
+        total_imgs = len(self.imgs)
+        if total_imgs <= 0:
+            self.btn_prev_page.setEnabled(False)
+            self.btn_next_page.setEnabled(False)
+            self.lbl_page_info.setText("")
+            return
+        import math
+        total_sheets = math.ceil(total_imgs / unidades)
+        # show multipage controls only when there are multiple source pages
+        has_multi = total_imgs > 1
+        try:
+            self.cmb_multipage.setVisible(has_multi)
+        except Exception:
+            pass
+        self.btn_prev_page.setVisible(has_multi)
+        self.btn_next_page.setVisible(has_multi)
+        self.lbl_page_info.setVisible(has_multi)
+        if not has_multi or total_sheets <= 1:
+            self.btn_prev_page.setEnabled(False)
+            self.btn_next_page.setEnabled(False)
+            self.lbl_page_info.setText("")
+        else:
+            self.btn_prev_page.setEnabled(self.current_page > 0)
+            self.btn_next_page.setEnabled(self.current_page < total_sheets - 1)
+            self.lbl_page_info.setText(f"Folha {self.current_page+1} / {total_sheets}")
+
+    def _change_page(self, delta: int) -> None:
+        if not self.imgs:
+            return
+        unidades = max(1, self.spin_units.value())
+        import math
+        total_sheets = math.ceil(len(self.imgs) / unidades)
+        self.current_page = max(0, min(self.current_page + delta, max(0, total_sheets - 1)))
+        self._update_pagination_controls()
+        self.generate_preview()
 
     def _read_local_version(self) -> str:
         try:
@@ -615,124 +821,138 @@ class MainWindow(QWidget):
         return QPixmap.fromImage(qimg)
 
     def generate_preview(self) -> None:
-        # If no image loaded, clear preview
-        if not self.img:
-            self.lbl_preview.clear()
-            return
-        w_val = self.spin_w.value()
-        h_val = self.spin_h.value()
-        w = w_val if (w_val is not None and w_val > 0) else None
-        h = h_val if (h_val is not None and h_val > 0) else None
-        img = self.img
-        # (multipage removed) - no tiled preview
-        # Note: app now only shows single-page preview
-        if False:
-            try:
-                thumbs = []
-                max_w = 0
-                max_h = 0
-                for p in []:  # disabled
-                    # create thumbnail for each page respecting requested size
-                    p_thumb = p.copy()
-                    p_thumb.thumbnail((400, 400), Image.LANCZOS)
-                    thumbs.append(p_thumb)
-                    max_w = max(max_w, p_thumb.width)
-                    max_h = max(max_h, p_thumb.height)
-
-                # choose number of columns to form roughly square layout
-                count = len(thumbs)
-                cols = int(math.ceil(math.sqrt(count)))
-                rows = int(math.ceil(count / cols))
-
-                gap = 10
-                total_w = cols * max_w + (cols + 1) * gap
-                total_h = rows * max_h + (rows + 1) * gap
-                tiled = Image.new('RGB', (total_w, total_h), (74, 74, 74))
-                x = gap
-                y = gap
-                i = 0
-                for r in range(rows):
-                    x = gap
-                    for c in range(cols):
-                        if i >= count:
-                            break
-                        th = thumbs[i]
-                        # paste centered in cell
-                        cx = x + (max_w - th.width) // 2
-                        cy = y + (max_h - th.height) // 2
-                        # create white background cell
-                        cell = Image.new(
-                            'RGB', (th.width, th.height), (255, 255, 255))
-                        tiled.paste(cell, (cx, cy))
-                        tiled.paste(th, (cx, cy))
-                        x += max_w + gap
-                        i += 1
-                    y += max_h + gap
-
-                composite = tiled
-                pix = self.pil_to_pixmap(composite)
-                scaled = pix.scaled(self.lbl_preview.width(), self.lbl_preview.height(
-                ), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.lbl_preview.setPixmap(scaled)
+        try:
+            # If no image loaded, clear preview
+            if not self.imgs:
+                self.lbl_preview.clear()
                 return
-            except Exception as e:
-                # fallback to single page preview
+
+            w_val = self.spin_w.value()
+            h_val = self.spin_h.value()
+            w = w_val if (w_val is not None and w_val > 0) else None
+            h = h_val if (h_val is not None and h_val > 0) else None
+
+            # 'unidades' now means how many distinct pages are placed per sheet.
+            folha = self.cmb_sheet.currentText()
+            modo = self._bleed_mode()
+            unidades_req = max(1, self.spin_units.value())
+
+            # compute which images belong to the current sheet
+            start_idx = self.current_page * unidades_req
+            end_idx = start_idx + unidades_req
+            imgs_slice = self.imgs[start_idx:end_idx]
+            if not imgs_slice:
+                self.lbl_preview.clear()
+                return
+
+            # prepare thumbnails/preview images for placement
+            pil_imgs = []
+            for p_idx, p in enumerate(imgs_slice):
+                p2 = p.copy()
+                # apply requested resize
+                if (w is not None) or (h is not None):
+                    p2 = self.impositor.resize_image_mm(p2, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+                # apply per-image rotation state
+                rot = self.imgs_rotation[start_idx + p_idx] if (start_idx + p_idx) < len(self.imgs_rotation) else 0
+                if rot:
+                    p2 = p2.rotate(rot, expand=True)
+                pil_imgs.append(p2)
+
+            # choose layout grid based on how many imgs we are showing (up to unidades_req)
+            count = len(pil_imgs)
+            unidades_grid = max(1, unidades_req)
+            cols = int(math.ceil(math.sqrt(unidades_grid)))
+            rows = int(math.ceil(unidades_grid / cols))
+            gap = int(max(0, round(self.spin_gap.value() * (self.impositor.dpi / 25.4))))
+
+            # derive slot sizes from sheet dimensions so layout stays stable
+            page_pad = 2
+            folha_w_pt, folha_h_pt = self.impositor.SHEETS_PT.get(folha, self.impositor.SHEETS_PT['A4'])
+            sheet_w = int(round(folha_w_pt))
+            sheet_h = int(round(folha_h_pt))
+            # compute slot size: divide available sheet area by grid (include gaps)
+            slot_w = max(40, (sheet_w - (cols + 1) * gap) // max(1, cols))
+            slot_h = max(40, (sheet_h - (rows + 1) * gap) // max(1, rows))
+            total_w = cols * slot_w + (cols + 1) * gap
+            total_h = rows * slot_h + (rows + 1) * gap
+            sheet = Image.new('RGB', (sheet_w, sheet_h), (255, 255, 255))
+            # compute top-left of tiled area inside sheet so it's centered
+            sheet_gap_x = max(0, (sheet_w - total_w) // 2)
+            sheet_gap_y = max(0, (sheet_h - total_h) // 2)
+
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(sheet)
+            # draw thin border around the sheet to separate white page from background
+            try:
+                draw.rectangle([0, 0, sheet_w - 1, sheet_h - 1], outline=(0, 0, 0), width=1)
+            except Exception:
                 pass
 
-        # proceed with single-image preview below
-        if (w is not None) or (h is not None):
-            img = self.impositor.resize_image_mm(
-                img, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
-        modo = self._bleed_mode()
-        # apply rotation chosen to maximize fit for preview
-        if getattr(self, '_rotate_for_export', False):
-            img = img.rotate(90, expand=True)
-        try:
-            # Determine unidades but clamp to what actually fits on the sheet
-            folha = self.cmb_sheet.currentText()
-            unidades_requested = self.spin_units.value()
-            max_fit = self._units_for_image_and_sheet(
-                img, folha, self.spin_bleed.value(), self.spin_gap.value())
-            unidades = min(max(1, max_fit), max(1, unidades_requested))
-            # If only one unit, compute margins to center the item on the sheet
-            # folha already assigned above
-            if unidades == 1:
-                # Build bleed image to compute size in points
-                img_bleed = self.impositor.add_bleed(
-                    img, self.spin_bleed.value(), modo, self.cor_sangria)
-                img_w_pt = img_bleed.width * 72 / self.impositor.dpi
-                img_h_pt = img_bleed.height * 72 / self.impositor.dpi
-                folha_w_pt, folha_h_pt = self.impositor.SHEETS_PT.get(
-                    folha, self.impositor.SHEETS_PT['A4'])
-                margin_x_pt = max(0.0, (folha_w_pt - img_w_pt) / 2.0)
-                margin_mm = margin_x_pt / PT_PER_MM
-                preview = self.impositor.generate_preview(img, folha=folha, unidades=unidades, sangria_mm=self.spin_bleed.value(
-                ), modo_sangria=modo, cor_sangria=self.cor_sangria, margem_mm=margin_mm, gap_mm=self.spin_gap.value())
-            else:
-                preview = self.impositor.generate_preview(img, folha=self.cmb_sheet.currentText(), unidades=unidades, sangria_mm=self.spin_bleed.value(
-                ), modo_sangria=modo, cor_sangria=self.cor_sangria, gap_mm=self.spin_gap.value())
-            # compose over graphite background with a white sheet inset for better contrast
-            try:
-                padding = 20
-                bg = Image.new('RGB', (preview.width + padding * 2,
-                               preview.height + padding * 2), (74, 74, 74))
-                # create white sheet area
-                sheet_box = Image.new(
-                    'RGB', (preview.width, preview.height), (255, 255, 255))
-                bg.paste(sheet_box, (padding, padding))
-                bg.paste(preview, (padding, padding))
-                composite = bg
-            except Exception:
-                composite = preview
-            pix = self.pil_to_pixmap(composite)
-            scaled = pix.scaled(self.lbl_preview.width(), self.lbl_preview.height(
-            ), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # create thumbnails from pil_imgs to fit into slots
+            thumbs = []
+            for im in pil_imgs:
+                th = im.copy()
+                # create a reasonably sized thumbnail for preview rendering
+                max_thumb = max(40, min(slot_w, slot_h))
+                th.thumbnail((max_thumb, max_thumb), Image.LANCZOS)
+                thumbs.append(th)
+
+            i = 0
+            # paste each cell into the sheet (white page is the sheet itself, cells have inner white area)
+            for r in range(rows):
+                for c in range(cols):
+                    if i >= count:
+                        break
+                    th = thumbs[i]
+                    cell_x = sheet_gap_x + gap + c * (slot_w + gap)
+                    cell_y = sheet_gap_y + gap + r * (slot_h + gap)
+                    # compute content area inside the slot and resize thumbnail to fit
+                    page_pad_local = page_pad
+                    content_w = max(8, slot_w - page_pad_local * 2)
+                    content_h = max(8, slot_h - page_pad_local * 2)
+                    th2 = th.copy()
+                    if self.chk_keep.isChecked():
+                        # preserve aspect
+                        th2.thumbnail((content_w, content_h), Image.LANCZOS)
+                    else:
+                        # stretch to fill content area when proportion not preserved
+                        try:
+                            th2 = th2.resize((content_w, content_h), Image.LANCZOS)
+                        except Exception:
+                            th2.thumbnail((content_w, content_h), Image.LANCZOS)
+                    th_x = cell_x + page_pad_local + (content_w - th2.width) // 2
+                    th_y = cell_y + page_pad_local + (content_h - th2.height) // 2
+                    sheet.paste(th2, (th_x, th_y))
+                    # draw thin black border for the slot on top
+                    try:
+                        draw.rectangle([cell_x, cell_y, cell_x + slot_w - 1, cell_y + slot_h - 1], outline=(0, 0, 0), width=1)
+                    except Exception:
+                        pass
+                    # rotation indicator (draw on top)
+                    global_idx = start_idx + i
+                    try:
+                        if self.imgs_rotation[global_idx] % 360 != 0:
+                            draw.rectangle([cell_x + 6, cell_y + 6, cell_x + 22, cell_y + 22], fill=(200, 180, 0))
+                    except Exception:
+                        pass
+                    i += 1
+                if i >= count:
+                    break
+
+            # place the sheet onto a darker background so it stands out in the preview
+            padding = 20
+            bg_w = sheet.width + padding * 2
+            bg_h = sheet.height + padding * 2
+            bg = Image.new('RGB', (bg_w, bg_h), (74, 74, 74))
+            bg.paste(sheet, (padding, padding))
+            pix = self.pil_to_pixmap(bg)
+            scaled = pix.scaled(self.lbl_preview.width(), self.lbl_preview.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.lbl_preview.setPixmap(scaled)
         except Exception as e:
             self.lbl_preview.setText(f"Erro no preview: {e}")
 
     def export_pdf(self) -> None:
-        if not self.img:
+        if not self.imgs:
             self.lbl_file.setText("Nenhum arquivo carregado")
             return
         # build a sensible default filename: 'original - ajustado.pdf' when possible
@@ -764,35 +984,54 @@ class MainWindow(QWidget):
         h_val = self.spin_h.value()
         w = w_val if (w_val is not None and w_val > 0) else None
         h = h_val if (h_val is not None and h_val > 0) else None
-        img = self.img
-        if (w is not None) or (h is not None):
-            img = self.impositor.resize_image_mm(
-                img, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+        # prepare image(s) for export
+        imgs_for_export = []
+        if len(self.imgs) > 1:
+            # apply resize to each page if requested
+            for p in self.imgs:
+                p2 = p
+                if (w is not None) or (h is not None):
+                    p2 = self.impositor.resize_image_mm(p2, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+                imgs_for_export.append(p2)
+        else:
+            img_single = self.imgs[0]
+            if (w is not None) or (h is not None):
+                img_single = self.impositor.resize_image_mm(img_single, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+            imgs_for_export = [img_single]
         modo = self._bleed_mode()
         try:
             folha = self.cmb_sheet.currentText()
             # rotate image if earlier decision indicated better fit
-            img_to_export = img.rotate(90, expand=True) if getattr(
-                self, '_rotate_for_export', False) else img
+            # for multipage, rotate each image if needed
+            img_to_export = [ (p.rotate(90, expand=True) if getattr(self, '_rotate_for_export', False) else p) for p in imgs_for_export ]
             # limit unidades to what fits
+            # when passing list, compute based on first image as approximation
             max_fit = self._units_for_image_and_sheet(
-                img_to_export, folha, self.spin_bleed.value(), self.spin_gap.value())
+                img_to_export[0], folha, self.spin_bleed.value(), self.spin_gap.value())
             unidades = min(self.spin_units.value(), max(1, max_fit))
-            # If single unit, compute margin so the item is centered on the page
             # compute margin when single unit requested so it's centered
             if unidades == 1:
                 img_bleed = self.impositor.add_bleed(
-                    img_to_export, self.spin_bleed.value(), modo, self.cor_sangria)
+                    img_to_export[0], self.spin_bleed.value(), modo, self.cor_sangria)
                 img_w_pt = img_bleed.width * 72 / self.impositor.dpi
                 folha_w_pt, folha_h_pt = self.impositor.SHEETS_PT.get(
                     folha, self.impositor.SHEETS_PT['A4'])
                 margin_x_pt = max(0.0, (folha_w_pt - img_w_pt) / 2.0)
                 margem_mm = margin_x_pt / PT_PER_MM
-                self.impositor.impose_to_pdf(img_to_export, folha=folha, unidades=unidades, sangria_mm=self.spin_bleed.value(
-                ), modo_sangria=modo, margem_mm=margem_mm, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria)
+                if len(img_to_export) == 1:
+                    self.impositor.impose_to_pdf(img_to_export[0], folha=folha, unidades=unidades, sangria_mm=self.spin_bleed.value(
+                    ), modo_sangria=modo, margem_mm=margem_mm, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria)
+                else:
+                    # when exporting multiple source pages, place distinct pages per sheet according to unidades
+                    self.impositor.impose_to_pdf(img_to_export, folha=folha, unidades=unidades, sangria_mm=self.spin_bleed.value(
+                    ), modo_sangria=modo, margem_mm=margem_mm, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria, multi_mode='one_each')
             else:
-                self.impositor.impose_to_pdf(img_to_export, folha=self.cmb_sheet.currentText(), unidades=unidades, sangria_mm=self.spin_bleed.value(
-                ), modo_sangria=modo, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria)
+                if len(img_to_export) == 1:
+                    self.impositor.impose_to_pdf(img_to_export[0], folha=self.cmb_sheet.currentText(), unidades=unidades, sangria_mm=self.spin_bleed.value(
+                    ), modo_sangria=modo, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria)
+                else:
+                    self.impositor.impose_to_pdf(img_to_export, folha=self.cmb_sheet.currentText(), unidades=unidades, sangria_mm=self.spin_bleed.value(
+                    ), modo_sangria=modo, gap_mm=self.spin_gap.value(), output_path=save_path, cor_sangria=self.cor_sangria, multi_mode='one_each')
             # show completed status and debug info about rotation
             rotated = bool(getattr(self, '_rotate_for_export', False))
             self.lbl_file.setText(
