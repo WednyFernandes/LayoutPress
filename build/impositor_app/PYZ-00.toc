@@ -820,7 +820,7 @@
    'C:\\Users\\Comunicação\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\importlib\\util.py',
    'PYMODULE'),
   ('impositor',
-   'f:\\FERRAMENTAS DESIGN\\MIDIA PROPRIA\\impositor_app\\impositor.py',
+   'F:\\FERRAMENTAS DESIGN\\MIDIA PROPRIA\\impositor_app\\impositor.py',
    'PYMODULE'),
   ('inspect',
    'C:\\Users\\Comunicação\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\inspect.py',
