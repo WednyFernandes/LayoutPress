@@ -1,43 +1,170 @@
-/* Compact dark theme inspired by PyQtDarkTheme (reduced) */
+/* LayoutPress Dark Theme - Complementary to colorful UI */
+/* This theme adds dark mode support while preserving the colorful accent buttons */
+
 QWidget {
-  background-color: #2b2b2b;
-  color: #dcdcdc;
-  selection-background-color: #3d6ea8;
-  selection-color: #ffffff;
+  background-color: #1e1e1e;
+  color: #e0e0e0;
+  font-family: "Segoe UI", Arial, sans-serif;
 }
+
+/* Group boxes with colored titles preserved */
 QGroupBox {
-  border: 1px solid #3c3f41;
-  margin-top: 6px;
-  padding: 6px;
+  font-weight: bold;
+  font-size: 13px;
+  padding: 10px;
+  margin-top: 12px;
+  border: 2px solid #404040;
+  border-radius: 6px;
+  background-color: #2a2a2a;
 }
+
 QGroupBox::title {
   subcontrol-origin: margin;
-  left: 6px;
-  padding: 0 3px 0 3px;
+  left: 10px;
+  padding: 0 5px;
+  color: #e0e0e0;
 }
+
+/* Labels - general text */
+QLabel {
+  color: #e0e0e0;
+  background: transparent;
+  font-size: 11px;
+}
+
+/* Input fields with dark background */
+QDoubleSpinBox, QSpinBox, QComboBox {
+  padding: 4px;
+  border: 1px solid #505050;
+  border-radius: 3px;
+  background: #2a2a2a;
+  color: #e0e0e0;
+  selection-background-color: #4a9eff;
+}
+
+QDoubleSpinBox:hover, QSpinBox:hover, QComboBox:hover {
+  border: 1px solid #606060;
+}
+
+QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus {
+  border: 1px solid #4a9eff;
+}
+
+/* Combo box dropdown */
+QComboBox::drop-down {
+  border: none;
+  width: 20px;
+}
+
+QComboBox::down-arrow {
+  image: none;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid #e0e0e0;
+  margin-right: 5px;
+}
+
+QComboBox QAbstractItemView {
+  background-color: #2a2a2a;
+  color: #e0e0e0;
+  selection-background-color: #4a9eff;
+  selection-color: white;
+  border: 1px solid #505050;
+}
+
+/* Checkboxes */
+QCheckBox {
+  color: #e0e0e0;
+  spacing: 5px;
+}
+
+QCheckBox::indicator {
+  width: 16px;
+  height: 16px;
+  border: 1px solid #505050;
+  border-radius: 3px;
+  background: #2a2a2a;
+}
+
+QCheckBox::indicator:checked {
+  background: #4a9eff;
+  border: 1px solid #4a9eff;
+}
+
+QCheckBox::indicator:hover {
+  border: 1px solid #606060;
+}
+
+/* Buttons - neutral background (colorful inline styles in code will override) */
 QPushButton {
-  background-color: #3c3f41;
-  border: 1px solid #4b4f51;
   padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  background-color: #404040;
+  color: #e0e0e0;
+}
+
+QPushButton:hover {
+  background-color: #505050;
+}
+
+QPushButton:pressed {
+  background-color: #303030;
+}
+
+QPushButton:disabled {
+  background-color: #2a2a2a;
+  color: #606060;
+}
+
+/* Scrollbars */
+QScrollBar:vertical {
+  background: #2a2a2a;
+  width: 12px;
+  margin: 0;
+}
+
+QScrollBar::handle:vertical {
+  background: #505050;
+  min-height: 20px;
+  border-radius: 6px;
+}
+
+QScrollBar::handle:vertical:hover {
+  background: #606060;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+  height: 0px;
+}
+
+QScrollBar:horizontal {
+  background: #2a2a2a;
+  height: 12px;
+  margin: 0;
+}
+
+QScrollBar::handle:horizontal {
+  background: #505050;
+  min-width: 20px;
+  border-radius: 6px;
+}
+
+QScrollBar::handle:horizontal:hover {
+  background: #606060;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+  width: 0px;
+}
+
+/* Tooltips */
+QToolTip {
+  background-color: #2a2a2a;
+  color: #e0e0e0;
+  border: 1px solid #505050;
+  padding: 4px;
   border-radius: 3px;
 }
-QPushButton:hover { background-color: #4b4f51; }
-QPushButton:pressed { background-color: #2f3335; }
-QLabel { color: #e6e6e6; }
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-  background-color: #353838;
-  border: 1px solid #4b4f51;
-  padding: 3px;
-  selection-background-color: #3d6ea8;
-}
-QComboBox QAbstractItemView { background: #2b2b2b; selection-background-color: #3d6ea8; }
-QCheckBox { spacing: 6px; }
-QMenuBar { background: #2b2b2b; }
-QToolBar { background: #2b2b2b; }
-QStatusBar { background: #2b2b2b; }
-QScrollBar:horizontal, QScrollBar:vertical {
-  background: #2b2b2b; height: 12px; width: 12px; margin: 0px 0px 0px 0px;
-}
-QScrollBar::handle { background: #4a4a4a; min-width: 20px; }
-QScrollBar::add-line, QScrollBar::sub-line { background: none; }
-QLabel#footer { color: #888888; font-size: 10px; }
+

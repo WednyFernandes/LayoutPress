@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('dark_theme.qss', '.'), ('layoutpress.ico', '.')],
+    datas=[('dark_theme.qss', '.'), ('layoutpress.ico', '.'), ('VERSION', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
