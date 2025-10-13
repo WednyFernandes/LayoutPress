@@ -35,7 +35,7 @@ from PySide6.QtGui import QPixmap, QImage, QIcon
 from PySide6.QtCore import Qt, QTimer
 
 from impositor import Impositor, PT_PER_MM
-from PIL import Image
+from PIL import Image, ImageDraw
 import fitz
 import math
 
@@ -402,15 +402,27 @@ class MainWindow(QWidget):
         try:
             self.imgs = []
             self.imgs_rotation = []
-            # handle PDFs by extracting all pages
+            # handle PDFs by extracting pages; if a PDF has multiple pages, ask the user which to import
             for path in paths:
                 if path.lower().endswith('.pdf'):
                     pdf = fitz.open(path)
+                    # load all pages temporarily
+                    temp_pages = []
                     for p in pdf:
                         pix = p.get_pixmap(dpi=self.impositor.dpi)
                         img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
-                        self.imgs.append(img)
-                        self.imgs_rotation.append(0)
+                        temp_pages.append(img)
+                    # if multiple pages, show selection dialog
+                    if len(temp_pages) > 1:
+                        selected = self._select_pdf_pages_dialog(path, len(temp_pages))
+                        if selected:
+                            for i in selected:
+                                self.imgs.append(temp_pages[i])
+                                self.imgs_rotation.append(0)
+                    else:
+                        if temp_pages:
+                            self.imgs.append(temp_pages[0])
+                            self.imgs_rotation.append(0)
                 else:
                     im = self.impositor.read_image(path)
                     self.imgs.append(im)
@@ -532,7 +544,7 @@ class MainWindow(QWidget):
                       lambda *_: self._on_sheet_change())
         _safe_connect(self.cmb_bleed.currentTextChanged,
                       lambda *_: self._on_ui_change())
-        _safe_connect(self.cmb_multipage.currentIndexChanged, lambda *_: self._on_ui_change())
+        _safe_connect(self.cmb_multipage.currentIndexChanged, self._on_multipage_change)
         # pagination buttons
         try:
             _safe_connect(self.btn_prev_page.clicked, lambda *_: self._change_page(-1))
@@ -770,32 +782,33 @@ class MainWindow(QWidget):
         except Exception:
             pass
 
+    def _on_multipage_change(self) -> None:
+        """Handle multipage mode change: reset page and update UI."""
+        self.current_page = 0
+        self._on_ui_change()
+
     def _update_pagination_controls(self) -> None:
-        # interpret current_page as sheet index; compute total sheets based on unidades (pages per sheet)
-        unidades = max(1, self.spin_units.value())
+        # interpret current_page as sheet index; compute total sheets using centralized helper
         total_imgs = len(self.imgs)
         if total_imgs <= 0:
             self.btn_prev_page.setEnabled(False)
             self.btn_next_page.setEnabled(False)
             self.lbl_page_info.setText("")
+            self.btn_prev_page.setVisible(False)
+            self.btn_next_page.setVisible(False)
+            self.lbl_page_info.setVisible(False)
+            self.cmb_multipage.setVisible(False)
             return
-        
-        # Get multipage mode to determine pagination
-        multipage_mode = 'repeat_per_page' if self.cmb_multipage.currentText().startswith('Mesma imagem') else 'one_each'
-        
-        if multipage_mode == 'repeat_per_page':
-            # Repeat mode: multiple copies per sheet
-            total_sheets = math.ceil(total_imgs / unidades)
-        else:
-            # One_each mode: one image per sheet
-            total_sheets = total_imgs
-        
+
+        total_sheets, per_page = self._compute_total_sheets()
+
         # show pagination controls only when there are multiple source pages
-        has_multi = total_imgs > 1
+        has_multi = total_imgs > 1 and total_sheets > 1
         self.btn_prev_page.setVisible(has_multi)
         self.btn_next_page.setVisible(has_multi)
         self.lbl_page_info.setVisible(has_multi)
-        if not has_multi or total_sheets <= 1:
+        self.cmb_multipage.setVisible(total_imgs > 1)
+        if not has_multi:
             self.btn_prev_page.setEnabled(False)
             self.btn_next_page.setEnabled(False)
             self.lbl_page_info.setText("")
@@ -804,20 +817,95 @@ class MainWindow(QWidget):
             self.btn_next_page.setEnabled(self.current_page < total_sheets - 1)
             self.lbl_page_info.setText(f"Folha {self.current_page+1} / {total_sheets}")
 
+    def _compute_total_sheets(self) -> tuple[int, int]:
+        """Return (total_sheets, per_page) based on current UI and loaded images.
+
+        per_page is the number of slots per sheet for one_each mode (or unidades for repeat mode).
+        """
+        total_imgs = len(self.imgs)
+        unidades = max(1, self.spin_units.value())
+        multipage_mode = 'repeat_per_page' if self.cmb_multipage.currentText().startswith('Mesma imagem') else 'one_each'
+
+        # repeat_per_page: one sheet per source image
+        if multipage_mode == 'repeat_per_page':
+            return (total_imgs, unidades)
+
+        # one_each: compute grid based on first image and sheet
+        if total_imgs == 0:
+            return (0, 0)
+        try:
+            first = self.imgs[0].copy()
+            w_val = self.spin_w.value()
+            h_val = self.spin_h.value()
+            w = w_val if (w_val is not None and w_val > 0) else None
+            h = h_val if (h_val is not None and h_val > 0) else None
+            if (w is not None) or (h is not None):
+                first = self.impositor.resize_image_mm(first, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+            sangria_mm = self.spin_bleed.value()
+            gap_mm = self.spin_gap.value()
+            folha = self.cmb_sheet.currentText()
+            first_bleed = self.impositor.add_bleed(first, sangria_mm, self._bleed_mode(), self.cor_sangria)
+            img_w_pt = first_bleed.width * 72 / self.impositor.dpi
+            img_h_pt = first_bleed.height * 72 / self.impositor.dpi
+            margem_pt = 5.0 * PT_PER_MM
+            gap_pt = gap_mm * PT_PER_MM
+            if img_w_pt + gap_pt > 0:
+                cols = int((self.impositor.SHEETS_PT[folha][0] - 2 * margem_pt + gap_pt) // (img_w_pt + gap_pt))
+            else:
+                cols = 1
+            if img_h_pt + gap_pt > 0:
+                rows = int((self.impositor.SHEETS_PT[folha][1] - 2 * margem_pt + gap_pt) // (img_h_pt + gap_pt))
+            else:
+                rows = 1
+            cols = max(1, cols)
+            rows = max(1, rows)
+            per_page = cols * rows
+            total_sheets = math.ceil(total_imgs / max(1, per_page))
+            return (total_sheets, per_page)
+        except Exception:
+            return (math.ceil(total_imgs / max(1, unidades)), unidades)
+
     def _change_page(self, delta: int) -> None:
         if not self.imgs:
             return
-        
-        # Get multipage mode to determine pagination
+        # Get multipage mode to determine pagination (same logic as _update_pagination_controls)
         multipage_mode = 'repeat_per_page' if self.cmb_multipage.currentText().startswith('Mesma imagem') else 'one_each'
-        
+        total_imgs = len(self.imgs)
         if multipage_mode == 'repeat_per_page':
-            # Repeat mode: multiple copies per sheet
-            unidades = max(1, self.spin_units.value())
-            total_sheets = math.ceil(len(self.imgs) / unidades)
+            total_sheets = total_imgs
         else:
-            # One_each mode: one image per sheet
-            total_sheets = len(self.imgs)
+            # compute per_page like in _update_pagination_controls
+            try:
+                first = self.imgs[0].copy()
+                w_val = self.spin_w.value()
+                h_val = self.spin_h.value()
+                w = w_val if (w_val is not None and w_val > 0) else None
+                h = h_val if (h_val is not None and h_val > 0) else None
+                if (w is not None) or (h is not None):
+                    first = self.impositor.resize_image_mm(first, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+                sangria_mm = self.spin_bleed.value()
+                gap_mm = self.spin_gap.value()
+                folha = self.cmb_sheet.currentText()
+                first_bleed = self.impositor.add_bleed(first, sangria_mm, self._bleed_mode(), self.cor_sangria)
+                img_w_pt = first_bleed.width * 72 / self.impositor.dpi
+                img_h_pt = first_bleed.height * 72 / self.impositor.dpi
+                margem_pt = 5.0 * PT_PER_MM
+                gap_pt = gap_mm * PT_PER_MM
+                if img_w_pt + gap_pt > 0:
+                    cols = int((self.impositor.SHEETS_PT[folha][0] - 2 * margem_pt + gap_pt) // (img_w_pt + gap_pt))
+                else:
+                    cols = 1
+                if img_h_pt + gap_pt > 0:
+                    rows = int((self.impositor.SHEETS_PT[folha][1] - 2 * margem_pt + gap_pt) // (img_h_pt + gap_pt))
+                else:
+                    rows = 1
+                cols = max(1, cols)
+                rows = max(1, rows)
+                per_page = cols * rows
+                total_sheets = math.ceil(total_imgs / max(1, per_page))
+            except Exception:
+                unidades = max(1, self.spin_units.value())
+                total_sheets = math.ceil(total_imgs / unidades)
         
         self.current_page = max(0, min(self.current_page + delta, max(0, total_sheets - 1)))
         self._update_pagination_controls()
@@ -1030,160 +1118,212 @@ class MainWindow(QWidget):
             
             # Get multipage mode to determine how to handle multiple images
             multipage_mode = 'repeat_per_page' if self.cmb_multipage.currentText().startswith('Mesma imagem') else 'one_each'
-            
-            # In 'one_each' mode, each sheet shows 1 image, so unidades_req should be 1 for grid calculation
-            # But we still respect the user's unidades setting for repeat mode
-            grid_unidades = unidades_req if multipage_mode == 'repeat_per_page' else 1
-            
-            # compute which images belong to the current sheet
-            if multipage_mode == 'repeat_per_page':
-                # Repeat mode: show unidades_req copies of images on each sheet
-                start_idx = self.current_page * unidades_req
-                end_idx = start_idx + unidades_req
-            else:
-                # One_each mode: show 1 image per sheet
-                start_idx = self.current_page
-                end_idx = start_idx + 1
-            
-            imgs_slice = self.imgs[start_idx:end_idx] if start_idx < len(self.imgs) else []
-            if not imgs_slice:
-                self.lbl_preview.clear()
-                return
 
-            # prepare images for preview (same as export)
-            pil_imgs = []
-            for p_idx, p in enumerate(imgs_slice):
-                p2 = p.copy()
-                # apply requested resize
-                if (w is not None) or (h is not None):
-                    p2 = self.impositor.resize_image_mm(p2, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
-                # apply per-image rotation state
-                rot = self.imgs_rotation[start_idx + p_idx] if (start_idx + p_idx) < len(self.imgs_rotation) else 0
-                if rot:
-                    p2 = p2.rotate(rot, expand=True)
-                pil_imgs.append(p2)
-
-            # Get sheet dimensions
+            # sheet dims in points
             folha_w_pt, folha_h_pt = self.impositor.SHEETS_PT.get(folha, self.impositor.SHEETS_PT['A4'])
-            sheet_w = int(round(folha_w_pt))
-            sheet_h = int(round(folha_h_pt))
-            
-            # Create white sheet (same as impositor.generate_preview)
-            preview = Image.new("RGB", (sheet_w, sheet_h), (255, 255, 255))
-            
-            # Use FIRST image to compute grid (same logic as export)
-            if not pil_imgs:
-                self.lbl_preview.clear()
-                return
-                
-            first_img = pil_imgs[0]
-            
-            # Add bleed and compute dimensions IN POINTS (same as export)
-            img_bleed = self.impositor.add_bleed(first_img, sangria_mm, modo, self.cor_sangria)
-            img_w_pt = img_bleed.width * 72 / self.impositor.dpi
-            img_h_pt = img_bleed.height * 72 / self.impositor.dpi
-            
             margem_pt = margem_mm * PT_PER_MM
             gap_pt = gap_mm * PT_PER_MM
-            
-            # Compute cols/rows EXACTLY like impositor.py
-            if img_w_pt + gap_pt > 0:
-                cols = int((folha_w_pt - 2 * margem_pt + gap_pt) // (img_w_pt + gap_pt))
-            else:
-                cols = 1
-            if img_h_pt + gap_pt > 0:
-                rows = int((folha_h_pt - 2 * margem_pt + gap_pt) // (img_h_pt + gap_pt))
-            else:
-                rows = 1
-            
-            cols = max(1, cols)
-            rows = max(1, rows)
-            
-            # Limit slots by unidades (how many images we want to place)
-            per_page = cols * rows
-            slots = min(unidades_req, per_page)
-            
-            # Count: how many images to actually place
-            # In repeat mode: use all slots (even if only 1 image)
-            # In sequential mode: limited by available images
-            if multipage_mode == 'repeat_per_page':
-                count = slots  # Place all slots (repeat images as needed)
-            else:
-                count = min(len(pil_imgs), slots)  # Limited by available images
-            
-            # Compute layout dimensions (same as impositor.py)
-            used_w = cols * img_w_pt + (cols - 1) * gap_pt
-            used_h = rows * img_h_pt + (rows - 1) * gap_pt
-            start_x = max(margem_pt, (folha_w_pt - used_w) / 2.0)
-            start_y = max(margem_pt, (folha_h_pt - used_h) / 2.0)
-            
-            from PIL import ImageDraw
-            draw = ImageDraw.Draw(preview)
-            border_color = (77, 77, 77)  # K 30% - same as impositor.py
-            
-            # Place images on the sheet (up to unidades)
-            placed = 0
-            for r in range(rows):
-                for c in range(cols):
-                    if placed >= count:
-                        break
-                    
-                    # Get the image for this slot based on multipage mode
-                    if multipage_mode == 'repeat_per_page':
-                        # Repeat first image (or cycle through available images)
-                        img_idx = placed % len(pil_imgs)
+
+            # If there are multiple source images, mirror Impositor.impose_to_pdf behavior
+            if len(self.imgs) > 1:
+                if multipage_mode == 'repeat_per_page':
+                    # Each source image becomes a sheet showing repeated copies of that image
+                    # pick the source image for the current sheet
+                    idx = max(0, min(self.current_page, len(self.imgs) - 1))
+                    src = self.imgs[idx].copy()
+                    # apply resize if requested
+                    if (w is not None) or (h is not None):
+                        src = self.impositor.resize_image_mm(src, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+                    # compute bleed and sizes
+                    src_bleed = self.impositor.add_bleed(src, sangria_mm, modo, self.cor_sangria)
+                    img_w_pt = src_bleed.width * 72 / self.impositor.dpi
+                    img_h_pt = src_bleed.height * 72 / self.impositor.dpi
+
+                    # compute grid
+                    if img_w_pt + gap_pt > 0:
+                        cols = int((folha_w_pt - 2 * margem_pt + gap_pt) // (img_w_pt + gap_pt))
                     else:
-                        # 'one_each': use different images in sequence
-                        # In preview, we show the slice for current page
-                        img_idx = min(placed, len(pil_imgs) - 1)
-                    
-                    current_img = pil_imgs[img_idx]
-                    
-                    # Add bleed to this specific image
-                    img_with_bleed = self.impositor.add_bleed(current_img, sangria_mm, modo, self.cor_sangria)
-                    
-                    # Resize to points for preview rendering
-                    img_w_pt_cur = img_with_bleed.width * 72 / self.impositor.dpi
-                    img_h_pt_cur = img_with_bleed.height * 72 / self.impositor.dpi
-                    img_resized = img_with_bleed.resize((int(img_w_pt_cur), int(img_h_pt_cur)), Image.LANCZOS)
-                    
-                    # Compute position
-                    px = int(round(start_x + c * (img_w_pt + gap_pt)))
-                    py = int(round(start_y + r * (img_h_pt + gap_pt)))
-                    
-                    # Safety check - don't paste outside bounds
-                    if px < 0 or py < 0 or px + int(img_w_pt_cur) > preview.width or py + int(img_h_pt_cur) > preview.height:
+                        cols = 1
+                    if img_h_pt + gap_pt > 0:
+                        rows = int((folha_h_pt - 2 * margem_pt + gap_pt) // (img_h_pt + gap_pt))
+                    else:
+                        rows = 1
+                    cols = max(1, cols)
+                    rows = max(1, rows)
+                    per_page = cols * rows
+
+                    # compute unidades that fit (match export's _units_for_image_and_sheet)
+                    max_fit = self._units_for_image_and_sheet(src, folha, sangria_mm, gap_mm)
+                    unidades = min(unidades_req, max(1, max_fit))
+                    slots = min(per_page, unidades)
+
+                    # create pixel preview sheet
+                    sheet_w_px = int(round(folha_w_pt * self.impositor.dpi / 72))
+                    sheet_h_px = int(round(folha_h_pt * self.impositor.dpi / 72))
+                    preview = Image.new('RGB', (sheet_w_px, sheet_h_px), (255, 255, 255))
+
+                    # start positions in points -> pixels
+                    used_w = cols * img_w_pt + (cols - 1) * gap_pt
+                    used_h = rows * img_h_pt + (rows - 1) * gap_pt
+                    start_x = max(margem_pt, (folha_w_pt - used_w) / 2.0) * self.impositor.dpi / 72
+                    start_y = max(margem_pt, (folha_h_pt - used_h) / 2.0) * self.impositor.dpi / 72
+
+                    # draw the repeated src
+                    src_resized_px = src_bleed.resize((int(round(img_w_pt * self.impositor.dpi / 72)), int(round(img_h_pt * self.impositor.dpi / 72))), Image.LANCZOS)
+                    draw = ImageDraw.Draw(preview)
+                    border_color = (77, 77, 77)
+                    placed = 0
+                    for r in range(rows):
+                        for c in range(cols):
+                            if placed >= slots:
+                                break
+                            px = int(round(start_x + c * ((img_w_pt * self.impositor.dpi / 72) + (gap_pt * self.impositor.dpi / 72))))
+                            py = int(round(start_y + r * ((img_h_pt * self.impositor.dpi / 72) + (gap_pt * self.impositor.dpi / 72))))
+                            preview.paste(src_resized_px, (px, py))
+                            rect = [px, py, px + src_resized_px.width, py + src_resized_px.height]
+                            try:
+                                draw.rectangle(rect, outline=border_color, width=max(1, int(round(0.5 * PT_PER_MM * self.impositor.dpi / 72))))
+                            except Exception:
+                                pass
+                            placed += 1
+
+                else:
+                    # one_each: place sequential images across pages filling the grid
+                    # prepare all source images with bleed and requested resize
+                    imgs_pt = []
+                    for p in self.imgs:
+                        p2 = p.copy()
+                        if (w is not None) or (h is not None):
+                            p2 = self.impositor.resize_image_mm(p2, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+                        p_bleed = self.impositor.add_bleed(p2, sangria_mm, modo, self.cor_sangria)
+                        imgs_pt.append((p_bleed, p_bleed.width * 72 / self.impositor.dpi, p_bleed.height * 72 / self.impositor.dpi))
+
+                    if not imgs_pt:
+                        self.lbl_preview.clear()
+                        return
+
+                    ref_w = imgs_pt[0][1]
+                    ref_h = imgs_pt[0][2]
+                    if ref_w + gap_pt > 0:
+                        cols = max(1, int((folha_w_pt - 2 * margem_pt + gap_pt) // (ref_w + gap_pt)))
+                    else:
+                        cols = 1
+                    if ref_h + gap_pt > 0:
+                        rows = max(1, int((folha_h_pt - 2 * margem_pt + gap_pt) // (ref_h + gap_pt)))
+                    else:
+                        rows = 1
+                    per_page = cols * rows
+
+                    # compute start index for this preview page
+                    total_pages = max(1, math.ceil(len(imgs_pt) / per_page))
+                    page_idx = max(0, min(self.current_page, total_pages - 1))
+                    start_idx = page_idx * per_page
+                    slice_imgs = imgs_pt[start_idx:start_idx + per_page]
+
+                    # construct preview sheet
+                    sheet_w_px = int(round(folha_w_pt * self.impositor.dpi / 72))
+                    sheet_h_px = int(round(folha_h_pt * self.impositor.dpi / 72))
+                    preview = Image.new('RGB', (sheet_w_px, sheet_h_px), (255, 255, 255))
+                    used_w = cols * ref_w + (cols - 1) * gap_pt
+                    used_h = rows * ref_h + (rows - 1) * gap_pt
+                    start_x = max(margem_pt, (folha_w_pt - used_w) / 2.0) * self.impositor.dpi / 72
+                    start_y = max(margem_pt, (folha_h_pt - used_h) / 2.0) * self.impositor.dpi / 72
+                    draw = ImageDraw.Draw(preview)
+                    border_color = (77, 77, 77)
+
+                    idx = 0
+                    for r in range(rows):
+                        for c in range(cols):
+                            if idx >= len(slice_imgs):
+                                break
+                            pil_img_bleed, iw_pt, ih_pt = slice_imgs[idx]
+                            iw_px = int(round(iw_pt * self.impositor.dpi / 72))
+                            ih_px = int(round(ih_pt * self.impositor.dpi / 72))
+                            img_px = pil_img_bleed.resize((iw_px, ih_px), Image.LANCZOS)
+                            px = int(round(start_x + c * (iw_px + (gap_pt * self.impositor.dpi / 72))))
+                            py = int(round(start_y + r * (ih_px + (gap_pt * self.impositor.dpi / 72))))
+                            preview.paste(img_px, (px, py))
+                            try:
+                                draw.rectangle([px, py, px + iw_px, py + ih_px], outline=border_color, width=max(1, int(round(0.5 * PT_PER_MM * self.impositor.dpi / 72))))
+                            except Exception:
+                                pass
+                            idx += 1
+
+            else:
+                # Single-image case: reuse earlier single-image logic (centered grid)
+                img = self.impositor.add_bleed(self.imgs[0], sangria_mm, modo, self.cor_sangria)
+                img_w_pt = img.width * 72 / self.impositor.dpi
+                img_h_pt = img.height * 72 / self.impositor.dpi
+                if img_w_pt + gap_pt > 0:
+                    cols = int((folha_w_pt - 2 * margem_pt + gap_pt) // (img_w_pt + gap_pt))
+                else:
+                    cols = 1
+                if img_h_pt + gap_pt > 0:
+                    rows = int((folha_h_pt - 2 * margem_pt + gap_pt) // (img_h_pt + gap_pt))
+                else:
+                    rows = 1
+                cols = max(1, cols)
+                rows = max(1, rows)
+                per_page = cols * rows
+                used_w = cols * img_w_pt + (cols - 1) * gap_pt
+                used_h = rows * img_h_pt + (rows - 1) * gap_pt
+                start_x = max(margem_pt, (folha_w_pt - used_w) / 2.0) * self.impositor.dpi / 72
+                start_y = max(margem_pt, (folha_h_pt - used_h) / 2.0) * self.impositor.dpi / 72
+                sheet_w_px = int(round(folha_w_pt * self.impositor.dpi / 72))
+                sheet_h_px = int(round(folha_h_pt * self.impositor.dpi / 72))
+                preview = Image.new('RGB', (sheet_w_px, sheet_h_px), (255, 255, 255))
+                img_resized_px = img.resize((int(round(img_w_pt * self.impositor.dpi / 72)), int(round(img_h_pt * self.impositor.dpi / 72))), Image.LANCZOS)
+                draw = ImageDraw.Draw(preview)
+                border_color = (77, 77, 77)
+                placed = 0
+                for r in range(rows):
+                    for c in range(cols):
+                        if placed >= min(unidades_req, per_page):
+                            break
+                        px = int(round(start_x + c * ((img_w_pt * self.impositor.dpi / 72) + (gap_pt * self.impositor.dpi / 72))))
+                        py = int(round(start_y + r * ((img_h_pt * self.impositor.dpi / 72) + (gap_pt * self.impositor.dpi / 72))))
+                        preview.paste(img_resized_px, (px, py))
+                        try:
+                            draw.rectangle([px, py, px + img_resized_px.width, py + img_resized_px.height], outline=border_color, width=max(1, int(round(0.5 * PT_PER_MM * self.impositor.dpi / 72))))
+                        except Exception:
+                            pass
                         placed += 1
-                        continue
-                    
-                    # Paste image
-                    preview.paste(img_resized, (px, py))
-                    
-                    # Draw border (K 30%)
-                    rect = [px, py, px + int(img_w_pt_cur), py + int(img_h_pt_cur)]
-                    stroke_px = max(1, int(round(0.5 * PT_PER_MM)))
-                    try:
-                        draw.rectangle(rect, outline=border_color, width=stroke_px)
-                    except Exception:
-                        pass
-                    
-                    # Draw rotation indicator if image is rotated
-                    global_idx = start_idx + placed
-                    try:
-                        if global_idx < len(self.imgs_rotation) and self.imgs_rotation[global_idx] % 360 != 0:
-                            draw.rectangle([px + 6, py + 6, px + 22, py + 22], fill=(200, 180, 0))
-                    except Exception:
-                        pass
-                    
-                    placed += 1
-                if placed >= count:
-                    break
+            
+            # (preview image is already constructed above depending on mode)
 
             # place the sheet onto a darker background so it stands out in the preview
             padding = 20
             bg_w = preview.width + padding * 2
             bg_h = preview.height + padding * 2
             bg = Image.new('RGB', (bg_w, bg_h), (74, 74, 74))
+            # If the preview is completely blank (e.g. placement was off-canvas), show a centered thumbnail
+            try:
+                if preview.getbbox() is None:
+                    # create a thumbnail of the first original image to help the user see what's loaded
+                    try:
+                        orig = self.imgs[0].copy()
+                        # apply requested resize if set (so thumbnail resembles final size)
+                        if (w is not None) or (h is not None):
+                            orig = self.impositor.resize_image_mm(orig, largura_mm=w, altura_mm=h, manter_proporcao=self.chk_keep.isChecked())
+                        thumb = orig
+                    except Exception:
+                        thumb = Image.new('RGB', (100, 100), (200, 200, 200))
+                    max_thumb_w = int(preview.width * 0.6)
+                    max_thumb_h = int(preview.height * 0.6)
+                    thumb.thumbnail((max_thumb_w, max_thumb_h), Image.LANCZOS)
+                    tx = (preview.width - thumb.width) // 2
+                    ty = (preview.height - thumb.height) // 2
+                    preview.paste(thumb, (tx, ty))
+                    # draw a border around the thumbnail
+                    try:
+                        _draw = ImageDraw.Draw(preview)
+                        _draw.rectangle([tx, ty, tx + thumb.width, ty + thumb.height], outline=border_color, width=max(1, int(round(0.5 * PT_PER_MM * self.impositor.dpi / 72))))
+                    except Exception:
+                        pass
+            except Exception:
+                # if getbbox fails for any reason, continue and paste preview as-is
+                pass
+
             bg.paste(preview, (padding, padding))
             pix = self.pil_to_pixmap(bg)
             scaled = pix.scaled(self.lbl_preview.width(), self.lbl_preview.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -1303,6 +1443,40 @@ class MainWindow(QWidget):
                 pass
         except Exception as e:
             self.lbl_file.setText(f"Erro exportar: {e}")
+
+    def _select_pdf_pages_dialog(self, pdf_path: str, page_count: int) -> list[int]:
+        """Ask the user which pages to import from a multi-page PDF.
+
+        Returns a list of zero-based page indices selected, or an empty list if cancelled.
+        """
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton, QLabel, QAbstractItemView
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Selecionar páginas: {os.path.basename(pdf_path)}")
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Escolha as páginas para importar (segure Ctrl para múltipla seleção):"))
+        lw = QListWidget()
+        for i in range(page_count):
+            lw.addItem(f"Página {i+1}")
+        lw.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        # pre-select all by default
+        for i in range(page_count):
+            lw.item(i).setSelected(True)
+        layout.addWidget(lw)
+        btns = QHBoxLayout()
+        ok = QPushButton("Importar")
+        cancel = QPushButton("Cancelar")
+        ok.clicked.connect(dlg.accept)
+        cancel.clicked.connect(dlg.reject)
+        btns.addStretch()
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        layout.addLayout(btns)
+        dlg.setLayout(layout)
+        if dlg.exec() == QDialog.Accepted:
+            sel = [idx.row() for idx in lw.selectedIndexes()]
+            sel.sort()
+            return sel
+        return []
 
 
 def main() -> None:

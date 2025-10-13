@@ -406,26 +406,6 @@ class Impositor:
                         if count >= per_page or idx >= len(imgs_pt):
                             break
                     c.showPage()
-            elif multi_mode == 'duplex':
-                # Pair pages: for each pair, place front repeated then back repeated on next page
-                it = iter(img)
-                pair_list = []
-                temp = []
-                for p in img:
-                    temp.append(p)
-                i = 0
-                while i < len(temp):
-                    front = temp[i]
-                    back = temp[i+1] if i+1 < len(temp) else None
-                    # place front
-                    if front:
-                        _place_single_image(c, front)
-                        c.showPage()
-                    # place back
-                    if back:
-                        _place_single_image(c, back)
-                        c.showPage()
-                    i += 2
             else:
                 # fallback: repeat behavior
                 for pil_img in img:
