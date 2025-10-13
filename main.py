@@ -779,8 +779,17 @@ class MainWindow(QWidget):
             self.btn_next_page.setEnabled(False)
             self.lbl_page_info.setText("")
             return
-        import math
-        total_sheets = math.ceil(total_imgs / unidades)
+        
+        # Get multipage mode to determine pagination
+        multipage_mode = 'repeat_per_page' if self.cmb_multipage.currentText().startswith('Mesma imagem') else 'one_each'
+        
+        if multipage_mode == 'repeat_per_page':
+            # Repeat mode: multiple copies per sheet
+            total_sheets = math.ceil(total_imgs / unidades)
+        else:
+            # One_each mode: one image per sheet
+            total_sheets = total_imgs
+        
         # show pagination controls only when there are multiple source pages
         has_multi = total_imgs > 1
         self.btn_prev_page.setVisible(has_multi)
@@ -798,9 +807,18 @@ class MainWindow(QWidget):
     def _change_page(self, delta: int) -> None:
         if not self.imgs:
             return
-        unidades = max(1, self.spin_units.value())
-        import math
-        total_sheets = math.ceil(len(self.imgs) / unidades)
+        
+        # Get multipage mode to determine pagination
+        multipage_mode = 'repeat_per_page' if self.cmb_multipage.currentText().startswith('Mesma imagem') else 'one_each'
+        
+        if multipage_mode == 'repeat_per_page':
+            # Repeat mode: multiple copies per sheet
+            unidades = max(1, self.spin_units.value())
+            total_sheets = math.ceil(len(self.imgs) / unidades)
+        else:
+            # One_each mode: one image per sheet
+            total_sheets = len(self.imgs)
+        
         self.current_page = max(0, min(self.current_page + delta, max(0, total_sheets - 1)))
         self._update_pagination_controls()
         self.generate_preview()
@@ -1012,11 +1030,22 @@ class MainWindow(QWidget):
             
             # Get multipage mode to determine how to handle multiple images
             multipage_mode = 'repeat_per_page' if self.cmb_multipage.currentText().startswith('Mesma imagem') else 'one_each'
-
+            
+            # In 'one_each' mode, each sheet shows 1 image, so unidades_req should be 1 for grid calculation
+            # But we still respect the user's unidades setting for repeat mode
+            grid_unidades = unidades_req if multipage_mode == 'repeat_per_page' else 1
+            
             # compute which images belong to the current sheet
-            start_idx = self.current_page * unidades_req
-            end_idx = start_idx + unidades_req
-            imgs_slice = self.imgs[start_idx:end_idx]
+            if multipage_mode == 'repeat_per_page':
+                # Repeat mode: show unidades_req copies of images on each sheet
+                start_idx = self.current_page * unidades_req
+                end_idx = start_idx + unidades_req
+            else:
+                # One_each mode: show 1 image per sheet
+                start_idx = self.current_page
+                end_idx = start_idx + 1
+            
+            imgs_slice = self.imgs[start_idx:end_idx] if start_idx < len(self.imgs) else []
             if not imgs_slice:
                 self.lbl_preview.clear()
                 return
@@ -1073,7 +1102,14 @@ class MainWindow(QWidget):
             # Limit slots by unidades (how many images we want to place)
             per_page = cols * rows
             slots = min(unidades_req, per_page)
-            count = min(len(pil_imgs), slots)
+            
+            # Count: how many images to actually place
+            # In repeat mode: use all slots (even if only 1 image)
+            # In sequential mode: limited by available images
+            if multipage_mode == 'repeat_per_page':
+                count = slots  # Place all slots (repeat images as needed)
+            else:
+                count = min(len(pil_imgs), slots)  # Limited by available images
             
             # Compute layout dimensions (same as impositor.py)
             used_w = cols * img_w_pt + (cols - 1) * gap_pt
